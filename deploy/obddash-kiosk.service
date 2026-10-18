@@ -1,0 +1,36 @@
+# Chromium kiosk on the obddash UI, supervised by systemd (restarted if it ever exits).
+#
+# Needs the desktop to auto-login as the same user (raspi-config: System Options ->
+# Boot / Auto Login -> Desktop Autologin); deploy/setup-pi.sh sets that up and rewrites
+# User=, the uid in /run/user/<uid> and the paths below for your account.
+#
+# Alternative without systemd: a line in ~/.config/labwc/autostart
+#     /home/pi/obddash/deploy/kiosk-autostart.sh &
+# Use one or the other, not both.
+#
+# Logs:  journalctl -u obddash-kiosk -f
+# Stop the kiosk to get the desktop back:  sudo systemctl stop obddash-kiosk
+
+[Unit]
+Description=obddash kiosk browser (Chromium on http://localhost:8080)
+After=obddash.service graphical.target systemd-user-sessions.service
+Wants=obddash.service
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi
+# The desktop session's runtime directory: the Wayland socket and the session D-Bus
+# live here.  kiosk-autostart.sh waits until the socket appears, so it does not matter
+# whether this unit starts before or after the desktop.
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+Environment=OBDDASH_URL=http://localhost:8080/
+EnvironmentFile=-/etc/default/obddash
+ExecStart=/home/pi/obddash/deploy/kiosk-autostart.sh
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=graphical.target

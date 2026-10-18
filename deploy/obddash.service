@@ -1,0 +1,48 @@
+# obddash telemetry server (CAN reader + metrics + web UI on port 8080).
+#
+# deploy/setup-pi.sh installs this file with User=, WorkingDirectory= and the paths
+# below rewritten for your user and checkout.  By hand:
+#
+#   sudo install -m 644 deploy/obddash.service /etc/systemd/system/obddash.service
+#   sudoedit /etc/systemd/system/obddash.service     # fix User= and the paths
+#   sudo systemctl daemon-reload && sudo systemctl enable --now obddash
+#
+# Logs:      journalctl -u obddash -f
+# Overrides: put OBDDASH_CONFIG=/path/to/other.yaml (or OBDDASH_ARGS="--record") in
+#            /etc/default/obddash; no need to edit this unit.
+
+[Unit]
+Description=obddash in-car telemetry server
+Documentation=file:///home/pi/obddash/README.md
+# can0 is configured by systemd-networkd (deploy/80-can0.network).  We do not *require*
+# the CAN device: CanReader retries opening the interface every 5 s and the UI shows
+# "NO LINK" meanwhile, which is more useful than a unit that never starts.
+After=network.target systemd-networkd.service
+Wants=network.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/obddash
+Environment=OBDDASH_CONFIG=/home/pi/obddash/config/default.yaml
+Environment=OBDDASH_ARGS=
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/default/obddash
+ExecStart=/home/pi/obddash/.venv/bin/obddash run -c ${OBDDASH_CONFIG} $OBDDASH_ARGS
+Restart=on-failure
+RestartSec=2
+# Ctrl-C equivalent: lets uvicorn close the WebSocket clients and the recorder flush.
+KillSignal=SIGINT
+TimeoutStopSec=10
+# Slightly ahead of Chromium for CPU so the 50 Hz tick loop stays on time.
+Nice=-5
+
+# Light hardening that does not get in the way (the app only writes its recordings/
+# directory inside WorkingDirectory).
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

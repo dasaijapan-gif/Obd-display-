@@ -1,0 +1,47 @@
+# systemd-networkd: bring can0 up at boot with the right bitrate.
+#
+#   sudo install -m 644 deploy/80-can0.network /etc/systemd/network/80-can0.network
+#   sudo systemctl enable --now systemd-networkd
+#   sudo systemctl disable systemd-networkd-wait-online.service    # see [Link] below
+#
+# Raspberry Pi OS uses NetworkManager for Wi-Fi/Ethernet.  systemd-networkd only
+# touches interfaces that a .network file matches, so the two coexist: networkd
+# configures can0, NetworkManager leaves it alone.  (deploy/setup-pi.sh does all this.)
+#
+# Check:   ip -details -statistics link show can0
+#          (look for "state UP" / "ERROR-ACTIVE" and "bitrate 500000")
+# Change:  edit /etc/systemd/network/80-can0.network, then
+#          sudo networkctl reload && sudo networkctl reconfigure can0
+#
+# The file is named 80-* so a lower-numbered file you add later (e.g. 70-can0.network)
+# wins; networkd applies the first matching file in lexical order.
+
+[Match]
+Name=can0
+
+[Link]
+# A CAN interface never gets an IP address, so it never counts as "online": without
+# this line systemd-networkd-wait-online would wait for can0.  With it, can0 is
+# ignored - but when can0 is the only link networkd manages (Wi-Fi / Ethernet belong
+# to NetworkManager), wait-online then has nothing it can call online and still runs
+# into its 2-minute timeout whenever network-online.target is pulled in.  So also
+# disable systemd-networkd-wait-online.service (setup-pi.sh does);
+# NetworkManager-wait-online keeps covering network-online.target.
+RequiredForOnline=no
+
+[CAN]
+# OBD-II on CAN (ISO 15765-4) runs at 500 kbit/s on almost every passenger car.  The
+# standard also allows 250 kbit/s; if `candump can0` shows nothing but error frames
+# (or `ip -s link` shows the error counters climbing) with the ignition on, try:
+#BitRate=250K
+BitRate=500K
+
+# Recover automatically from "bus-off" (e.g. after a wiring glitch or a wrong
+# bitrate) after this delay instead of staying down until the next reboot.
+RestartSec=100ms
+
+# Truly passive mode: the controller never transmits, not even ACK bits.  Only use it
+# together with `obddash run --no-obd` (broadcast signals only): OBD-II requests are
+# transmissions and are impossible in listen-only mode.  Note that a lone listen-only
+# node on a bus where nobody else ACKs (a bench setup) sees retransmitted frames.
+#ListenOnly=yes
