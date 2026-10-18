@@ -163,6 +163,7 @@ class RawState:
 class Connection:
     bus: bool = False  # CAN interface is up and frames are flowing
     ecu: bool = False  # the ECU answered an OBD request within the last ~2 s
+    obd: bool = False  # OBD-II polling is enabled (False: broadcast-only, replay, none)
     imu: bool = False
     source: str = "none"  # "can" | "sim" | "replay" | "none"
     pid_hz: float = 0.0  # OBD responses per second
@@ -303,6 +304,7 @@ class DynoRun:
     peak_torque_rpm: float
     correction: float  # SAE J1349-style correction factor applied (1.0 = none)
     curve: list[DynoPoint] = field(default_factory=list)
+    peak_crank_kw: float = 0.0  # peak wheel power / drivetrain efficiency
 
 
 @dataclass

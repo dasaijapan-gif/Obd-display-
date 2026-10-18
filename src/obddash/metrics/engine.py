@@ -25,9 +25,10 @@ Per tick (``tick(raw, t)``, ``t`` = monotonic seconds):
    * ``COOLANT HIGH``: coolant >= ``coolant_alert_c`` (clears 2 C below)
    * ``OIL HOT``: oil >= ``oil_alert_c`` (clears 2 C below)
    * ``BATT LOW``: module voltage < ``batt_low_v`` (clears 0.3 V above)
-   * ``NO ECU``: the runtime has said ``conn.ecu`` is False for 2 s (only once
-     :meth:`set_connection` has been called; the grace covers start-up, before the
-     first OBD answer)
+   * ``NO ECU``: OBD polling is enabled (``conn.obd``) and the runtime has said
+     ``conn.ecu`` is False for 2 s (only once :meth:`set_connection` has been
+     called; the grace covers start-up, before the first OBD answer).  Broadcast-only
+     cars, replays and source none never raise it
 
 Events (``drain_events()``): ``shift.scored`` (a scored downshift, the
 ShiftResult as a dict), ``dyno.started`` (armed pulls), ``dyno.done`` (with peaks,
@@ -398,7 +399,7 @@ class MetricsEngine:
         if batt is not None:
             lim = cfg.batt_low_v
             hyst("BATT LOW", batt < lim, batt > lim + BATT_HYST_V)
-        if self._conn_set and not self._conn.ecu:
+        if self._conn_set and self._conn.obd and not self._conn.ecu:
             if self._ecu_down_since is None:
                 self._ecu_down_since = t
             if t - self._ecu_down_since >= NO_ECU_DEBOUNCE_S:

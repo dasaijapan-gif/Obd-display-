@@ -48,7 +48,7 @@ Server → client, at `server.ws_rate_hz` (default 30 Hz):
 ```jsonc
 {"type": "telemetry", "data": {
   "t": 123.45, "ts": 1760000000.0,
-  "conn": {"bus": true, "ecu": true, "imu": false, "source": "sim", "pid_hz": 48.0, "frame_hz": 210.0},
+  "conn": {"bus": true, "ecu": true, "obd": true, "imu": false, "source": "sim", "pid_hz": 48.0, "frame_hz": 210.0},
   "veh": {"speed_kph": 87.3, "rpm": 4210, "gear": 3, "gear_conf": 0.97, "gear_source": "ratio",
           "throttle_pct": 64.0, "load_pct": 71.0, "coolant_c": 92, "intake_c": 31, "oil_temp_c": null,
           "maf_gps": 41.2, "map_kpa": 88, "boost_kpa": -13, "baro_kpa": 101, "fuel_pct": 48,

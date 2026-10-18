@@ -13,4 +13,5 @@ angle, wheel speeds, ...) that standard OBD-II does not provide.
 Finding your car's broadcast ids: run `obddash scan` while parked with the ignition on,
 then press the brake / turn the wheel and watch which ids change. Open-source DBC files
 (e.g. the opendbc project) cover many models and can be transcribed into the `signals:`
-list below, or loaded directly with `--dbc` if `cantools` is installed.
+list below (`obddash.bus.signals.load_dbc` can convert one with `cantools` installed;
+a `--dbc` command-line flag is on the roadmap).

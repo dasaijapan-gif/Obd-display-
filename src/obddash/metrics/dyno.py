@@ -63,7 +63,6 @@ from __future__ import annotations
 import logging
 import math
 from collections import deque
-from dataclasses import dataclass
 from typing import Any
 
 from obddash.config import DynoConfig, VehicleConfig
@@ -92,11 +91,8 @@ CURVE_MAX = 120
 RUN_CURVE_MAX = 40  # <= 60 per the contract; 8 runs x 40 points keeps the JSON < 60 kB
 
 
-@dataclass
-class DynoRunRecord(DynoRun):
-    """A :class:`~obddash.model.DynoRun` plus the crank-power estimate."""
-
-    peak_crank_kw: float = 0.0
+# kept as an alias: peak_crank_kw now lives on model.DynoRun itself
+DynoRunRecord = DynoRun
 
 
 def sae_correction(baro_kpa: float | None, intake_c: float | None) -> float:

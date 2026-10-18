@@ -169,13 +169,13 @@ def test_alerts_with_hysteresis_and_events(vehicle):
     tel = rig.tick({Sig.COOLANT_C: 107.0, Sig.CONTROL_MODULE_V: 14.0, Sig.OIL_TEMP_C: 100.0})
     assert tel.alerts == []
     # NO ECU once the runtime reports the ECU as gone
-    rig.eng.set_connection(Connection(bus=True, ecu=False, source="can", pid_hz=0.0))
+    rig.eng.set_connection(Connection(bus=True, ecu=False, obd=True, source="can", pid_hz=0.0))
     tel = rig.tick(n=50)
     assert tel.alerts == []  # 2 s grace: start-up, before the first OBD answer
     tel = rig.tick(n=55)
     assert tel.alerts == ["NO ECU"]
     assert tel.conn.bus is True and tel.conn.source == "can"
-    rig.eng.set_connection(Connection(bus=True, ecu=True, source="can", pid_hz=48.0))
+    rig.eng.set_connection(Connection(bus=True, ecu=True, obd=True, source="can", pid_hz=48.0))
     tel = rig.tick()
     assert tel.alerts == [] and tel.conn.pid_hz == 48.0
 
@@ -497,14 +497,14 @@ def test_ecu_dropout_then_reconnect_in_another_gear(vehicle):
     answers again: the display drops to 0, NO ECU shows, nothing raises, and no
     phantom shift is scored for the engagement nobody saw."""
     rig = Rig(vehicle)
-    rig.eng.set_connection(Connection(bus=True, ecu=True, source="can"))
+    rig.eng.set_connection(Connection(bus=True, ecu=True, obd=True, source="can"))
     rig.tick(obd_only(vehicle, 100.0, 4), n=100)
     assert rig.tel.veh.gear == 4
-    rig.eng.set_connection(Connection(bus=True, ecu=False, source="can"))
+    rig.eng.set_connection(Connection(bus=True, ecu=False, obd=True, source="can"))
     tel = rig.tick(None, n=int(2.5 / DT))
     assert (tel.veh.rpm, tel.veh.speed_kph, tel.veh.gear) == (0.0, 0.0, 0)
     assert "NO ECU" in tel.alerts
-    rig.eng.set_connection(Connection(bus=True, ecu=True, source="can"))
+    rig.eng.set_connection(Connection(bus=True, ecu=True, obd=True, source="can"))
     tel = rig.tick(obd_only(vehicle, 95.0, 3), n=100)
     assert tel.veh.gear == 3 and tel.veh.gear_source == "ratio"
     assert "NO ECU" not in tel.alerts
@@ -565,10 +565,22 @@ def test_fuzzed_raw_values_never_trip_an_analyzer(vehicle, caplog):
             if rng.random() < 0.01:
                 rig.eng.command(rng.choice(cmds))
             if rng.random() < 0.02:
-                rig.eng.set_connection(Connection(bus=True, ecu=rng.random() < 0.5))
+                rig.eng.set_connection(Connection(bus=True, ecu=rng.random() < 0.5, obd=True))
             jitter = rng.random() * 0.5 if rng.random() < 0.01 else 0.0
             tel = rig.eng.tick(rig.raw, rig.now - jitter)
             rig.eng.drain_events()
             if i % 250 == 0:
                 json.dumps(tel.to_dict(), allow_nan=False)
     assert [r.getMessage() for r in caplog.records] == []
+
+
+def test_no_ecu_alert_needs_obd_polling(vehicle):
+    """Broadcast-only cars (OBD polling off), replays and source none must not raise
+    NO ECU just because no ECU answers requests nobody sent."""
+    rig = Rig(vehicle)
+    rig.eng.set_connection(Connection(bus=True, ecu=False, obd=False, source="can"))
+    tel = rig.tick(cruise_state(vehicle), n=200)  # 4 s, well past the 2 s debounce
+    assert "NO ECU" not in tel.alerts
+    rig.eng.set_connection(Connection(bus=True, ecu=False, obd=True, source="can"))
+    tel = rig.tick(n=200)
+    assert "NO ECU" in tel.alerts

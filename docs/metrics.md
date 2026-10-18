@@ -98,7 +98,10 @@ later the clutch has dragged the engine onto the gearbox speed and every shift w
 look perfect. Without a clutch switch, obddash finds that moment from the rpm trace
 (it walks back from the lock while the error is closing faster than a free-revving
 engine can change), as described in
-[`shifts.py`](../src/obddash/metrics/shifts.py).
+[`shifts.py`](../src/obddash/metrics/shifts.py). With a clutch switch, the walk-back
+never goes past the last moment the pedal was still down: before that the clutch was
+open, so an over-blip settling back towards the target is the engine on its own and is
+scored at release, not at the peak of the blip.
 
 **The score** (0-100):
 

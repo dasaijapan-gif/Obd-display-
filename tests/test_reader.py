@@ -589,3 +589,17 @@ def test_stats_containers_are_replaced_not_mutated(channel, ecu):
         reader.stop()
     assert early_supported == set() and early_unknown == {}
     assert reader.stats.supported_pids == ecu.supported
+
+
+def test_vehicle_rate_cap_only_lowers_the_bus_rate():
+    """A vehicle file's obd_max_rate_hz caps polling below the app setting, never above it."""
+    from obddash.bus.reader import CanReader
+    from obddash.config import BusConfig, VehicleConfig
+    from obddash.model import RawState
+
+    slow = CanReader(BusConfig(obd_max_rate_hz=60), VehicleConfig(obd_max_rate_hz=10), RawState())
+    assert slow._min_interval == pytest.approx(0.1)
+    fast = CanReader(BusConfig(obd_max_rate_hz=20), VehicleConfig(obd_max_rate_hz=100), RawState())
+    assert fast._min_interval == pytest.approx(0.05)
+    unset = CanReader(BusConfig(obd_max_rate_hz=60), VehicleConfig(), RawState())
+    assert unset._min_interval == pytest.approx(1 / 60)

@@ -221,8 +221,8 @@ Changes the research points to, in rough priority order:
 
 1. **Gentler OBD polling.** Some cars misbehave when polled fast. On 2004-2007 RX-8s it glitches
    the dash and stops the engine revving; the known fix is about 100 ms between requests. A
-   2018 STI struggled with more than three PIDs at once. Polling needs a per-vehicle rate
-   limit and a conservative default.
+   2018 STI struggled with more than three PIDs at once. Done in part: vehicle files can set
+   `obd_max_rate_hz` (use 10 on an RX-8). Still to do: a more conservative default.
 2. **29-bit OBD auto-detection.** Many Hondas (S2000 AP2, FN2, FL5, 2010+ TSX) ignore 11-bit
    requests. obddash already supports 29-bit; it should try both.
 3. **Listen-only mode for taps.** On an internal bus obddash must not transmit, acknowledge or

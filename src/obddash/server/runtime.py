@@ -422,6 +422,7 @@ class Runtime:
             st = reader.stats
             conn.bus = bool(st.bus_ok)
             conn.ecu = bool(st.ecu_ok)
+            conn.obd = bool(getattr(getattr(reader, "bus_cfg", None), "obd_enabled", False))
             conn.pid_hz = round(float(st.pid_hz), 1)
             conn.frame_hz = round(float(st.frame_hz), 1)
         elif self.replayer is not None:

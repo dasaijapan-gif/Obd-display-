@@ -17,6 +17,7 @@ rotational_inertia_factor: 1.08
 idle_rpm: 800
 redline_rpm: 6500
 shift_light_rpm: 6000
+# obd_max_rate_hz: 10        # cap OBD requests per second for touchy ECUs (RX-8: ~10)
 wheelbase_m: 2.6
 steering_ratio: 15            # steering wheel degrees per road wheel degree
 

@@ -114,6 +114,7 @@ async def test_none_source_ticks_and_broadcasts_telemetry():
     assert data["conn"] == {
         "bus": False,
         "ecu": False,
+        "obd": False,
         "imu": False,
         "source": "none",
         "pid_hz": 0.0,

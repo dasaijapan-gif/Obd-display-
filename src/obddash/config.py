@@ -20,6 +20,7 @@ For the common case of a whole-byte or two-byte field you can instead give ``byt
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -158,6 +159,9 @@ class VehicleConfig(BaseModel):
     idle_rpm: float = 800.0
     redline_rpm: float = 6500.0
     shift_light_rpm: float = 6000.0
+    # Cap on OBD requests per second for this car, below bus.obd_max_rate_hz.  Some ECUs
+    # misbehave when polled fast (2004-2007 RX-8: dash glitches, engine stops revving).
+    obd_max_rate_hz: float | None = None
     wheelbase_m: float = 2.6
     steering_ratio: float = 15.0  # steering wheel deg per road wheel deg
     brake: BrakeConfig = Field(default_factory=BrakeConfig)
@@ -277,7 +281,23 @@ class AppConfig(BaseModel):
 # --------------------------------------------------------------------------------------
 PACKAGE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = PACKAGE_DIR.parent.parent
-CONFIG_DIR = REPO_ROOT / "config"
+
+
+def find_config_dir() -> Path:
+    """Where the shipped config files live.  In order: ``$OBDDASH_CONFIG_DIR``; the
+    source checkout's ``config/`` (editable installs, the usual Pi setup); ``./config``
+    in the working directory (a wheel install run from a copy of the repo).  Falls back
+    to the checkout path so error messages name a sensible place."""
+    env = os.environ.get("OBDDASH_CONFIG_DIR")
+    candidates = [Path(env).expanduser()] if env else []
+    candidates += [REPO_ROOT / "config", Path.cwd() / "config"]
+    for c in candidates:
+        if (c / "default.yaml").is_file():
+            return c.resolve()
+    return REPO_ROOT / "config"
+
+
+CONFIG_DIR = find_config_dir()
 
 
 def load_yaml(path: str | Path) -> dict:

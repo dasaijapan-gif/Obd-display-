@@ -224,7 +224,10 @@ class CanReader:
         self._backoff: dict[int, float] = {}
         self._backoff_logged: set[int] = set()
         self._last_send_t = -1e9
-        self._min_interval = 1.0 / max(bus_cfg.obd_max_rate_hz, 0.1)
+        rate = bus_cfg.obd_max_rate_hz
+        if vehicle.obd_max_rate_hz:  # a per-car cap only ever lowers the rate
+            rate = min(rate, vehicle.obd_max_rate_hz)
+        self._min_interval = 1.0 / max(rate, 0.1)
         self._discovery_failures = 0
         self._active_logged: tuple | None = None
 
