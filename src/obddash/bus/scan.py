@@ -26,7 +26,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TextIO
 
 import can
@@ -192,7 +192,12 @@ class BusScanner:
         """Bytes that moved outside their baseline values, most suspicious first:
         few distinct baseline values (quiet while parked), then most frames changed."""
         with self._lock:
-            changes = list(self._moved.values())
+            # copies: the notifier thread keeps adding to new_values while the caller
+            # renders, and iterating a set that grows underneath raises RuntimeError
+            changes = [
+                replace(c, baseline_values=set(c.baseline_values), new_values=set(c.new_values))
+                for c in self._moved.values()
+            ]
         changes.sort(
             key=lambda c: (
                 c.new_id,

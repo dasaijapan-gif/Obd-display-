@@ -13,8 +13,11 @@ A :class:`Driver` turns time + the current :class:`VehicleState` into
   slow down, repeat (~30 s cycle).  Exercises the virtual dyno.
 * ``"idle"`` - parked: idling with occasional blips, brake presses, steering wheel
   movement and clutch presses.  Handy for UI work.
-* ``"highway"`` - steady 110 km/h in 6th with gentle lane changes and the odd
-  mild brake.
+* ``"highway"`` - steady 110 km/h in top gear (6th) with gentle lane changes and
+  the odd mild brake.
+
+The scripts are tuned for ``config/vehicles/sim_sportscar.yaml`` but key their gear
+choices off ``VehicleConfig.gear_count()``, so a 4- or 5-speed car still laps.
 
 Gear changes are choreographed by :class:`ShiftSequencer`, which overrides the
 throttle / clutch / gear fields of the script's intent while a shift is in
@@ -344,6 +347,9 @@ class LapDriver(Driver):
     def __init__(self, vehicle: VehicleConfig, seed: int = 1) -> None:
         super().__init__(vehicle, seed)
         self.upshift_rpm = min(7000.0, vehicle.redline_rpm - 300.0)
+        # 5th on the Sim Sportscar (so the brake zone can go 5-4-3-2); top gear on a
+        # shorter box, otherwise the straight would never end on a 4-speed car
+        self.cruise_gear = max(1, min(5, vehicle.gear_count()))
         self.straight_kph = 165.0
         self.cruise_s = 15.0
         self.brake_zone_bar = 70.0
@@ -399,11 +405,15 @@ class LapDriver(Driver):
         if not self.shift.active:
             if g < 3 and s.rpm >= self.upshift_rpm:
                 self.shift.upshift(t)
-            elif g in (3, 4) and kph >= self.straight_kph - 4.0 and t - self.shift.last_t > 1.5:
-                self.shift.upshift(t)  # short-shift up to 5th for the cruise
+            elif (
+                3 <= g < self.cruise_gear
+                and kph >= self.straight_kph - 4.0
+                and t - self.shift.last_t > 1.5
+            ):
+                self.shift.upshift(t)  # short-shift up to the cruise gear (5th)
             elif g < 6 and s.rpm >= self.vehicle.redline_rpm - 150.0:
                 self.shift.upshift(t)  # never sit on the limiter
-        if g == 5 and not self.shift.active and self._cruise_t0 is None:
+        if g >= self.cruise_gear and not self.shift.active and self._cruise_t0 is None:
             self._cruise_t0 = tp
         return self._cruise_t0 is not None and tp - self._cruise_t0 >= self.cruise_s
 
@@ -600,7 +610,7 @@ class IdleDriver(Driver):
 # "highway"
 # --------------------------------------------------------------------------------------
 class HighwayDriver(Driver):
-    """Accelerate to 110 km/h in 6th, then cruise with gentle lane changes and the odd
+    """Accelerate to 110 km/h in top gear (6th), then cruise with gentle lane changes and the odd
     mild brake application."""
 
     name = "highway"
@@ -624,6 +634,7 @@ class HighwayDriver(Driver):
         c = Controls(gear=self.shift.gear)
         kph, rpm = state.speed_kph, state.rpm
         g = self.shift.gear
+        top = self.vehicle.gear_count()  # 6th on the Sim Sportscar
         if self._state == "accel":
             if g == 0 and kph < 1.0:
                 self._launch(tp, c, throttle=45.0)
@@ -631,10 +642,10 @@ class HighwayDriver(Driver):
             if self._launch(tp, c, throttle=45.0):
                 return c
             c.throttle_pct = 55.0
-            if not self.shift.active and g < 6:
+            if not self.shift.active and g < top:
                 if rpm >= self.climb_shift_rpm or (kph >= self.cruise_kph - 2.0 and g >= 4):
                     self.shift.upshift(t)
-            if g == 6 and not self.shift.active and kph >= self.cruise_kph - 5.0:
+            if g == top and not self.shift.active and kph >= self.cruise_kph - 5.0:
                 self._state = "cruise"
                 self._next_lane += t
                 self._next_brake += t
@@ -659,9 +670,9 @@ class HighwayDriver(Driver):
             else:
                 self._lane_t0 = None
                 self._next_lane = t + self.rng.uniform(12.0, 25.0)
-        if not self.shift.active and g == 6 and kph < 85.0:
+        if not self.shift.active and g == top and kph < 85.0:
             self.shift.downshift(t, state)
-        elif not self.shift.active and g == 5 and kph > 100.0:
+        elif not self.shift.active and g == top - 1 and kph > 100.0:
             self.shift.upshift(t)
         return c
 

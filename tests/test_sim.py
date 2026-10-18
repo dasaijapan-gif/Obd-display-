@@ -253,6 +253,38 @@ def test_step_tolerates_garbage_inputs(vehicle):
     assert s.gear == 42 and not s.locked  # not a forward gear: treated as neutral
 
 
+def test_nan_and_none_controls_do_not_poison_the_state(vehicle):
+    """_clamp lets NaN through; one NaN pedal value must not leave rpm/speed NaN forever."""
+    m = _model_at(vehicle, 60.0, 3)
+    fields = ("rpm", "speed_mps", "lat_g", "lon_g", "yaw_rate_dps", "engine_torque_nm")
+    for name in ("throttle_pct", "brake_bar", "clutch", "steering_deg", "gear"):
+        for bad in (float("nan"), float("inf") if name == "gear" else float("nan")):
+            c = Controls(throttle_pct=20.0, gear=3)
+            setattr(c, name, bad)
+            s = m.step(DT, c)
+            assert all(math.isfinite(getattr(s, f)) for f in fields), name
+    m.step(DT, Controls(throttle_pct=None, brake_bar=None, clutch=None, gear=None))
+    for _ in range(50):
+        s = m.step(DT, Controls(throttle_pct=20.0, gear=3))
+    assert s.locked and s.speed_kph > 50 and math.isfinite(s.fuel_pct)
+
+
+def test_coasting_car_comes_to_rest_and_can_pull_away_again(vehicle):
+    """Rolling resistance is off below 0.05 m/s; the car must still stop, not creep."""
+    m = _model_at(vehicle, 7.2, 0)
+    for _ in range(6000):  # 60 s coasting in neutral, no brakes
+        s = m.step(DT, Controls(gear=0))
+    assert s.speed_mps == 0.0
+    parked_at = s.distance_m
+    for _ in range(1000):
+        s = m.step(DT, Controls(gear=0))
+    assert s.distance_m == parked_at and s.wheel_speeds_kph == (0.0, 0.0, 0.0, 0.0)
+    for i in range(300):  # and a normal launch still works from there
+        clutch = max(0.0, 1.0 - i * DT / 0.9)
+        s = m.step(DT, Controls(throttle_pct=40.0, gear=1, clutch=clutch))
+    assert s.speed_kph > 5.0 and s.locked
+
+
 def test_substepping_large_dt_matches_small_steps_closely(vehicle):
     a = _model_at(vehicle, 50.0, 3)
     b = _model_at(vehicle, 50.0, 3)
@@ -376,6 +408,19 @@ def test_highway_script_cruises_in_sixth():
     assert max(abs(r[6]) for r in tail) > 0.05
 
 
+@pytest.mark.parametrize("n_gears", [4, 5])
+def test_scripts_cope_with_a_shorter_gearbox(vehicle, n_gears):
+    """`obddash sim --vehicle` may load a 4/5-speed car: the lap must still get past
+    its straight (cruise gear capped at top) and the highway must cruise in top."""
+    short = vehicle.model_copy(update={"gear_ratios": vehicle.gear_ratios[:n_gears]})
+    lap = Simulator(short, None, script="lap", seed=1, realtime=False)
+    lap.run(120.0, DT)
+    assert lap.driver.lap_count >= 1 and lap.driver.shift.n_down >= 3
+    hwy = Simulator(short, None, script="highway", seed=1, realtime=False)
+    hwy.run(90.0, DT)
+    assert hwy.state.gear == n_gears and 95 < hwy.state.speed_kph < 118
+
+
 def test_make_driver_rejects_unknown_script(vehicle):
     with pytest.raises(ValueError):
         make_driver("drift", vehicle)
@@ -392,3 +437,24 @@ def test_simulator_realtime_thread_runs_and_stops(vehicle):
     sim.stop()
     assert not sim.running
     assert 0.2 < sim.t < 3.0  # ~0.3 s wall clock x 4 (less on a starved CI box)
+
+
+def test_realtime_speed_multiplier_does_not_build_a_backlog(vehicle):
+    """Asking for more than the per-tick step cap must not pile up debt that keeps the
+    sim fast-forwarding after `speed` is lowered (here: paused)."""
+    import time
+
+    sim = Simulator(vehicle, None, script="idle", seed=3, realtime=True, rate_hz=100.0)
+    sim.speed = 500.0  # 10x beyond the 50 steps/tick cap
+    sim.start()
+    try:
+        time.sleep(0.3)
+        sim.speed = 0.0
+        time.sleep(0.05)
+        t_paused = sim.t
+        time.sleep(0.3)
+        drift = sim.t - t_paused
+    finally:
+        sim.stop()
+    assert t_paused > 1.0  # it did fast-forward
+    assert drift < 0.05  # and stopped at once: no hidden backlog being paid off

@@ -168,7 +168,7 @@ def test_pid_encodings_are_the_inverse_of_j1979():
     a, b = encode_pid(0x42, s)
     assert (a * 256 + b) / 1000 == pytest.approx(14.123)
     assert encode_pid(0x0E, s)[0] / 2 - 64 == pytest.approx(22.5)
-    a, b, _, _ = encode_pid(0x44, s)
+    a, b = encode_pid(0x44, s)  # J1979: 2 bytes (not the 4-byte O2-sensor layout)
     assert (a * 256 + b) * 2 / 65536 == pytest.approx(0.85, abs=0.001)
     a, b = encode_pid(0x5E, s)
     assert (a * 256 + b) / 20 == pytest.approx(12.35)
@@ -437,3 +437,149 @@ def test_simulator_end_to_end_on_virtual_bus(buses, vehicle):
         sim.stop()
     assert not sim.running
     assert sim.ecu.response_count >= 1
+
+
+# --------------------------------------------------------------------------------------
+# cross-checks against the real decoders in obddash.bus (the reader's view of the sim)
+# --------------------------------------------------------------------------------------
+_SIG_FIELD = {  # Sig name -> (VehicleState attribute or callable, tolerance)
+    "engine_load_pct": ("load_pct", 0.4),
+    "coolant_c": ("coolant_c", 0.5),
+    "map_kpa": ("map_kpa", 0.5),
+    "rpm": ("rpm", 0.25),
+    "speed_kph": (lambda s: s.speed_kph, 0.5),
+    "timing_adv_deg": ("timing_adv_deg", 0.25),
+    "intake_c": ("intake_c", 0.5),
+    "maf_gps": ("maf_gps", 0.005),
+    "throttle_pct": ("throttle_pct", 0.4),
+    "fuel_level_pct": ("fuel_pct", 0.4),
+    "baro_kpa": ("baro_kpa", 0.5),
+    "control_module_v": ("batt_v", 0.0005),
+    "lambda": ("lambda_", 0.0001),
+    "ambient_c": (lambda s: 22.0, 0.5),
+    "accel_pedal_pct": ("throttle_pct", 0.4),
+    "oil_temp_c": ("oil_temp_c", 0.5),
+    "fuel_rate_lph": ("fuel_rate_lph", 0.025),
+    "engine_torque_pct": (lambda s: s.engine_torque_nm / 250.0 * 100.0, 0.5),
+    "engine_ref_torque_nm": (lambda s: 250.0, 0.0),
+}
+
+
+def test_every_pid_matches_the_bus_decoder_length_and_round_trips(rolling_model):
+    """Each PID's length must equal the J1979 length the reader walks a multi-PID reply
+    with; one wrong length desynchronises every PID after it."""
+    from obddash.bus import obd
+    from obddash.sim.ecu import PID_ENCODERS, PID_LENGTHS
+
+    s = rolling_model.state
+    for pid in sorted(PID_LENGTHS):
+        data = encode_pid(pid, s)
+        assert data is not None, f"PID {pid:#04x}"
+        assert len(data) == PID_LENGTHS[pid] == obd.pid_length(pid), f"PID {pid:#04x}"
+    resp = obd.parse_response(OBD_RESPONSE_ID, bytes([0x41, 0x44]) + encode_pid(0x44, s))
+    assert resp.values and resp.values[0][1] == "lambda"
+    for pid in PID_ENCODERS:
+        resp = obd.parse_response(OBD_RESPONSE_ID, bytes([0x41, pid]) + encode_pid(pid, s))
+        ((_, name, value),) = resp.values
+        attr, tol = _SIG_FIELD[name]
+        want = attr(s) if callable(attr) else getattr(s, attr)
+        assert value == pytest.approx(want, abs=tol), f"PID {pid:#04x} ({name})"
+
+
+def test_multi_pid_reply_with_lambda_in_the_middle_decodes_completely(
+    buses, vehicle, rolling_model
+):
+    from obddash.bus import obd
+
+    tester, ecu_bus = buses
+    ecu = FakeEcu(vehicle, ecu_bus, lambda: rolling_model.state, latency_s=0.0, broadcast=False)
+    ecu.start()
+    try:
+        _request(tester, bytes([0x01, 0x0C, 0x44, 0x0D, 0x62, 0x10, 0x11]))
+        resp = obd.parse_response(OBD_RESPONSE_ID, _recv_isotp(tester))
+    finally:
+        ecu.stop()
+    names = [name for _, name, _ in resp.values]
+    assert names == ["rpm", "lambda", "speed_kph", "engine_torque_pct", "maf_gps", "throttle_pct"]
+    values = {name: v for _, name, v in resp.values}
+    assert values["rpm"] == pytest.approx(rolling_model.state.rpm, abs=0.25)
+    assert values["speed_kph"] == round(rolling_model.state.speed_kph)
+
+
+def test_responder_survives_send_errors_and_malformed_frames(buses, vehicle):
+    """A listener exception kills python-can's Notifier thread, so a failing send (here:
+    the flow control for a multi-frame request) or garbage must not escape _on_frame."""
+    tester, ecu_bus = buses
+    real_send = ecu_bus.send
+    failed: list[can.Message] = []
+
+    def flaky_send(msg, timeout=None):
+        if not failed:
+            failed.append(msg)
+            raise can.CanOperationError("simulated TX buffer overflow")
+        return real_send(msg, timeout)
+
+    ecu_bus.send = flaky_send
+    ecu = FakeEcu(vehicle, ecu_bus, VehicleState, latency_s=0.0, broadcast=False)
+    ecu.start()
+
+    def send_raw(data, arb=OBD_FUNCTIONAL_ID):
+        tester.send(can.Message(arbitration_id=arb, data=bytes(data), is_extended_id=False))
+
+    try:
+        # first frame of a long request -> the ECU's FC send raises in the Notifier thread
+        send_raw([0x10, 0x08, 0x01, 0x0C, 0x0D, 0x11, 0x04, 0x05], arb=OBD_PHYSICAL_ID)
+        deadline = time.monotonic() + 1.0
+        while not failed and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert failed and failed[0].data[0] == 0x30
+        # malformed / stray frames: empty, SF length 0 and 8, short CF, short FF, FC on the
+        # functional id, reserved PCI
+        for d in (
+            [],
+            [0x00],
+            [0x08, 1, 2, 3, 4, 5, 6, 7],
+            [0x21, 0xAA],
+            [0x10],
+            [0x30, 0, 0],
+            [0xF0],
+        ):
+            send_raw(d)
+        _request(tester, bytes([0x01, 0x0D]))
+        assert _recv_isotp(tester)[:2] == bytes([0x41, 0x0D])  # still answering
+    finally:
+        ecu.stop()
+
+
+def test_can_reader_decodes_every_fast_pid_in_multi_pid_mode(vehicle):
+    """The real CanReader polling the sim with multi-PID requests (multi-frame replies,
+    reader-side flow control) gets every PID of the group, not just those before 0x44."""
+    from obddash.bus.reader import CanReader
+    from obddash.config import BusConfig, PidRequest
+    from obddash.model import RawState, Sig
+
+    name = f"obddash-test-{next(_chan)}"
+    ecu_bus = can.Bus(interface="virtual", channel=name)
+    app_bus = can.Bus(interface="virtual", channel=name)
+    fast = (0x0C, 0x44, 0x0D, 0x11, 0x62)
+    veh = vehicle.model_copy(update={"pids": [PidRequest(pid=p, rate="fast") for p in fast]})
+    cfg = BusConfig(interface="virtual", channel=name, obd_multi_pid=True)
+    raw = RawState()
+    sim = Simulator(veh, ecu_bus, script="idle", seed=1, realtime=True)
+    reader = CanReader(cfg, veh, raw, bus=app_bus)
+    want = (Sig.RPM, Sig.LAMBDA, Sig.SPEED_KPH, Sig.THROTTLE_PCT, Sig.ENGINE_TORQUE_PCT)
+    sim.start()
+    reader.start()
+    try:
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not all(raw.has(n) for n in want):
+            time.sleep(0.05)
+        assert {n: raw.has(n) for n in want} == dict.fromkeys(want, True)
+        assert reader.stats.multi_pid  # did not fall back to single-PID requests
+        assert 500 < raw.get(Sig.RPM) < 5000
+        assert raw.get(Sig.LAMBDA) == pytest.approx(1.0, abs=0.05)
+        assert raw.get(Sig.BRAKE_PRESSURE_BAR) is not None  # broadcasts decoded too
+    finally:
+        reader.stop()  # shuts app_bus down
+        sim.stop()
+        ecu_bus.shutdown()

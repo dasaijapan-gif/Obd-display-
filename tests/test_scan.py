@@ -196,3 +196,46 @@ def test_run_scan_without_diff_and_non_tty_output():
     assert "\x1b[2J" not in out.getvalue()  # no escape codes when not a tty
     assert "123" in out.getvalue()
     assert scanner.ids[0x123].count == 1
+
+
+def test_changes_since_baseline_returns_snapshots_safe_to_render_while_feeding():
+    """``obddash scan --diff`` renders on the main thread while the notifier thread keeps
+    feeding: the returned ByteChange objects must be snapshots, not live sets."""
+    sc = BusScanner()
+    sc.begin_baseline()
+    sc.feed(0x200, bytes(8))
+    sc.end_baseline()
+    sc.feed(0x200, bytes([1, 0, 0, 0, 0, 0, 0, 0]))
+    snap = sc.changes_since_baseline()
+    assert [(c.byte_index, c.new_values) for c in snap] == [(0, {1})]
+    sc.feed(0x200, bytes([2, 0, 0, 0, 0, 0, 0, 0]))
+    assert snap[0].new_values == {1} and snap[0].count == 1  # untouched by later frames
+    assert sc.changes_since_baseline()[0].new_values == {1, 2}
+
+    stop = threading.Event()
+    errors: list[BaseException] = []
+
+    def feeder():
+        i = 0
+        while not stop.is_set():
+            # every byte keeps taking new values (capped at 64 per byte by the scanner)
+            sc.feed(0x200 + (i % 5), bytes((i * k + 3) & 0xFF for k in range(1, 9)))
+            sc.feed(0x500 + (i % 50), bytes([i & 0xFF]))  # new ids keep appearing
+            i += 1
+
+    t = threading.Thread(target=feeder, daemon=True)
+    t.start()
+    try:
+        end = time.monotonic() + 0.4
+        while time.monotonic() < end:
+            try:
+                sc.render_diff(width=100, limit=50)
+                sc.render_table(width=100)
+            except Exception as exc:  # pragma: no cover - only on a regression
+                errors.append(exc)
+                break
+    finally:
+        stop.set()
+        t.join(timeout=2.0)
+    assert not errors
+    assert all(len(c.new_values) <= 64 for c in sc.changes_since_baseline())

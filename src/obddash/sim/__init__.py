@@ -11,7 +11,8 @@
 
 :class:`Simulator` owns a :class:`VehicleModel` (physics), a scripted
 :class:`Driver` and a :class:`FakeEcu`.  With ``realtime=True`` a thread steps the
-model at ``rate_hz`` in wall-clock time (``sim.speed`` is a time multiplier); with
+model at ``rate_hz`` in wall-clock time (``sim.speed`` is a time multiplier, at most
+50x: what one tick cannot step is dropped, never carried as a backlog); with
 ``realtime=False`` nothing advances until the owner calls :meth:`Simulator.step`,
 which is how the deterministic tests drive it.  The bus is shared with the reader
 through python-can's virtual interface, so the ECU must receive and send on the
@@ -46,6 +47,8 @@ __all__ = [
 
 log = logging.getLogger(__name__)
 
+_MAX_STEPS_PER_TICK = 50  # realtime loop: physics steps per tick, i.e. the top `speed`
+
 
 class Simulator:
     """Physics + driver + fake ECU.  ``bus`` may be None for a pure-model simulation
@@ -69,7 +72,7 @@ class Simulator:
         self.seed = seed
         self.realtime = realtime
         self.rate_hz = max(1.0, float(rate_hz))
-        self.speed = 1.0  # time multiplier for the realtime thread
+        self.speed = 1.0  # time multiplier for the realtime thread (effective max 50x)
         self.model = VehicleModel(vehicle, params, seed=seed)
         self.driver: Driver = make_driver(script, vehicle, seed=seed)
         self.ecu: FakeEcu | None = None
@@ -146,10 +149,15 @@ class Simulator:
             debt += period * max(0.0, self.speed)
             n = 0
             try:
-                while debt >= period and n < 50:
+                while debt >= period and n < _MAX_STEPS_PER_TICK:
                     self.step(period)
                     debt -= period
                     n += 1
             except Exception:
                 log.exception("simulator step failed; continuing")
                 debt = 0.0
+            # Whatever could not be paid this tick is dropped, not carried: otherwise a
+            # speed above _MAX_STEPS_PER_TICK (or a slow host) piles up an unbounded
+            # backlog and the sim keeps fast-forwarding long after `speed` is lowered.
+            if debt > period:
+                debt = period

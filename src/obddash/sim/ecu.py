@@ -132,8 +132,10 @@ PID_ENCODERS: dict[int, Callable[[VehicleState], bytes]] = {
     0x2F: lambda s: _pct(s.fuel_pct),
     0x33: lambda s: _u8(s.baro_kpa),
     0x42: lambda s: _u16(s.batt_v * 1000.0),  # (A*256+B)/1000
-    # 0x44: equivalence ratio (A*256+B)*2/65536, then sensor voltage (C*256+D)/8192*8
-    0x44: lambda s: _u16(s.lambda_ * 32768.0) + _u16(3.3 * 8192.0),
+    # 0x44: commanded equivalence ratio (A*256+B)*2/65536 - TWO bytes.  (The 4-byte
+    # lambda + voltage layout belongs to the O2-sensor PIDs 0x24-0x2B; sending 4 here
+    # would desynchronise every PID after it in a multi-PID reply.)
+    0x44: lambda s: _u16(s.lambda_ * 32768.0),
     0x46: lambda s: _temp(22.0),  # ambient
     0x49: lambda s: _pct(s.throttle_pct),  # accelerator pedal D ~ throttle on this car
     0x5C: lambda s: _temp(s.oil_temp_c),
@@ -146,7 +148,7 @@ PID_ENCODERS: dict[int, Callable[[VehicleState], bytes]] = {
 PID_LENGTHS: dict[int, int] = {
     0x00: 4, 0x20: 4, 0x40: 4, 0x60: 4,
     0x04: 1, 0x05: 1, 0x0B: 1, 0x0C: 2, 0x0D: 1, 0x0E: 1, 0x0F: 1, 0x10: 2, 0x11: 1,
-    0x2F: 1, 0x33: 1, 0x42: 2, 0x44: 4, 0x46: 1, 0x49: 1, 0x5C: 1, 0x5E: 2, 0x62: 1, 0x63: 2,
+    0x2F: 1, 0x33: 1, 0x42: 2, 0x44: 2, 0x46: 1, 0x49: 1, 0x5C: 1, 0x5E: 2, 0x62: 1, 0x63: 2,
 }  # fmt: skip
 
 
@@ -316,7 +318,16 @@ class FakeEcu:
 
     # -- receive side ------------------------------------------------------------------------
     def _on_frame(self, msg: can.Message) -> None:
-        """Notifier callback: route ISO-TP frames addressed to us."""
+        """Notifier callback.  Must never raise: python-can re-raises a listener exception
+        in the Notifier thread (a plain callable has no ``on_error``), which would kill
+        the thread and leave the ECU silently deaf for the rest of the run."""
+        try:
+            self._route(msg)
+        except Exception:
+            log.debug("fake ECU: dropping frame %s", msg, exc_info=True)
+
+    def _route(self, msg: can.Message) -> None:
+        """Route ISO-TP frames addressed to us."""
         if msg.is_extended_id or msg.is_error_frame or msg.is_remote_frame:
             return
         if msg.arbitration_id not in (OBD_FUNCTIONAL_ID, OBD_PHYSICAL_ID):

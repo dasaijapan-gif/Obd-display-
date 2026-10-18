@@ -376,3 +376,32 @@ def test_build_single_frame_helper():
     assert bytes(msg.data) == bytes.fromhex("04410C1AF8000000")
     with pytest.raises(ValueError):
         obd.build_single_frame(bytes(8), 0x7E8)
+
+
+def test_isotp_malformed_first_frames_and_other_pci_types_are_ignored():
+    fc: list[int] = []
+    asm = obd.IsoTpAssembler(on_first_frame=fc.append)
+    assert asm.feed(0x7E8, bytes.fromhex("1005410C1AF80000")) is None  # FF_DL 5 fits an SF
+    assert asm.feed(0x7E8, bytes.fromhex("1000000000140000")) is None  # FF_DL 0: CAN-FD escape
+    assert asm.feed(0x7E8, bytes.fromhex("10")) is None  # truncated first frame
+    assert asm.in_progress == 0 and fc == []  # no flow control requested for any of them
+    assert asm.feed(0x7E8, bytes.fromhex("3000000000000000")) is None  # FC: not ours to take
+    for pci in range(4, 16):  # reserved PCI types
+        assert asm.feed(0x7E8, bytes([pci << 4]) + bytes(7)) is None
+    # a short (unpadded, DLC < 8) final consecutive frame still completes the message
+    payload = bytes(range(1, 19))  # 18 bytes: FF 6 + CF 7 + CF 5 (+2 padding)
+    frames = obd.split_multi_frame(payload)
+    last = frames[2].rstrip(b"\x00")
+    assert len(last) == 6
+    asm.feed(0x7E8, frames[0])
+    asm.feed(0x7E8, frames[1])
+    assert asm.feed(0x7E8, last) == (0x7E8, payload)
+
+
+def test_build_request_rejects_empty_and_oversized_pid_lists():
+    with pytest.raises(ValueError):
+        obd.build_request([])
+    with pytest.raises(ValueError):
+        obd.build_request(list(range(1, 8)))
+    msg = obd.build_request(list(range(1, 7)))  # exactly 6 PIDs = 7 payload bytes + PCI
+    assert bytes(msg.data) == bytes([0x07, 0x01, 1, 2, 3, 4, 5, 6]) and msg.dlc == 8

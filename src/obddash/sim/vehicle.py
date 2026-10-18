@@ -68,10 +68,23 @@ G = 9.80665  # m/s^2 per g
 RPM_TO_RADS = 2.0 * math.pi / 60.0
 RADS_TO_RPM = 60.0 / (2.0 * math.pi)
 _MAX_SUBSTEP = 0.02  # s; larger dt is split so the clutch / yaw dynamics stay stable
+_CREEP_MPS = 0.05  # below this the car is at rest unless driven harder than static friction
 
 
 def _clamp(x: float, lo: float, hi: float) -> float:
     return lo if x < lo else hi if x > hi else x
+
+
+def _num(x: object) -> float:
+    """``float(x)`` for an untrusted control input; None / NaN / non-numeric -> 0.0.
+
+    ``_clamp`` lets NaN through (every comparison is False), and one NaN pedal value
+    would otherwise poison rpm / speed for the rest of the run."""
+    try:
+        f = float(x)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+    return f if f == f else 0.0
 
 
 # --------------------------------------------------------------------------------------
@@ -273,12 +286,13 @@ class VehicleModel:
 
     def _step(self, dt: float, ctrl: Controls) -> None:
         p, v, s = self.p, self.vehicle, self.state
-        thr = _clamp(float(ctrl.throttle_pct or 0.0), 0.0, 100.0) / 100.0
-        brake = _clamp(float(ctrl.brake_bar or 0.0), 0.0, v.brake.max_pressure_bar * 1.5)
-        clutch = _clamp(float(ctrl.clutch or 0.0), 0.0, 1.0)
+        thr = _clamp(_num(ctrl.throttle_pct), 0.0, 100.0) / 100.0
+        brake = _clamp(_num(ctrl.brake_bar), 0.0, v.brake.max_pressure_bar * 1.5)
+        clutch = _clamp(_num(ctrl.clutch), 0.0, 1.0)
         e = 1.0 - clutch  # clutch engagement
-        gear = int(ctrl.gear or 0)
-        steering = _clamp(float(ctrl.steering_deg or 0.0), -720.0, 720.0)
+        gear_f = _num(ctrl.gear)
+        gear = int(gear_f) if math.isfinite(gear_f) else 0
+        steering = _clamp(_num(ctrl.steering_deg), -720.0, 720.0)
 
         speed = s.speed_mps
         rpm = s.rpm
@@ -323,11 +337,14 @@ class VehicleModel:
 
         # ---- longitudinal ----------------------------------------------------------------
         f_drag = 0.5 * p.air_density_kgm3 * v.cd * v.frontal_area_m2 * speed * speed
-        f_roll = v.crr * v.mass_kg * G if speed > 0.05 else 0.0
+        f_roll = v.crr * v.mass_kg * G if speed > _CREEP_MPS else 0.0
         f_brake = brake * p.brake_n_per_bar
         a_max = p.max_grip_g * G
-        if speed <= 0.0 and f_trac <= f_roll + f_brake + v.crr * v.mass_kg * G:
-            a_lon = 0.0  # held by the brakes / rolling resistance at a standstill
+        # Held by the brakes / static rolling resistance.  Below _CREEP_MPS the rolling
+        # term is switched off (no chatter around zero), so the stop must be explicit
+        # there too, or a car coasting to rest would creep on at ~0.05 m/s forever.
+        if speed <= _CREEP_MPS and f_trac <= f_roll + f_brake + v.crr * v.mass_kg * G:
+            a_lon = 0.0
             new_speed = 0.0
         else:
             a_lon = (f_trac - f_drag - f_roll - f_brake) / self._eff_mass

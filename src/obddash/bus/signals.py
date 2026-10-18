@@ -281,33 +281,53 @@ def load_dbc(path: str | Path, name_map: dict[str, str]) -> list[SignalConfig]:
             target = name_map.get(f"{msg.name}.{sig.name}") or name_map.get(sig.name)
             if target is None:
                 continue
-            mux_byte = mux_value = None
+            mux_byte: int | None = None
+            mux_values: list[int | None] = [None]
             if sig.multiplexer_ids:
                 mux = mux_signals.get(sig.multiplexer_signal or "")
-                if mux is None or mux.length != 8 or mux.start % 8 not in (0, 7):
+                mux_byte = _whole_byte_index(mux) if mux is not None else None
+                if mux_byte is None:
                     log.warning(
                         "dbc %s.%s: multiplexer is not a whole byte, skipping", msg.name, sig.name
                     )
                     continue
-                mux_byte = mux.start // 8
-                mux_value = int(sig.multiplexer_ids[0])
-            out.append(
-                SignalConfig(
-                    name=target,
-                    id=msg.frame_id,
-                    extended=bool(msg.is_extended_frame),
-                    start_bit=sig.start,
-                    length=sig.length,
-                    byte_order=BIG if sig.byte_order == "big_endian" else LITTLE,
-                    signed=bool(sig.is_signed),
-                    scale=float(sig.scale),
-                    offset=float(sig.offset),
-                    min=None if sig.minimum is None else float(sig.minimum),
-                    max=None if sig.maximum is None else float(sig.maximum),
-                    unit=sig.unit or "",
-                    mux_byte=mux_byte,
-                    mux_value=mux_value,
+                # one entry per selector value; the decoder only fires the matching one
+                mux_values = [int(v) for v in sig.multiplexer_ids]
+            lo, hi = sig.minimum, sig.maximum
+            if lo is not None and hi is not None and lo == hi == 0:
+                lo = hi = None  # DBC "[0|0]" means "no range" (older cantools pass it through)
+            for mux_value in mux_values:
+                out.append(
+                    SignalConfig(
+                        name=target,
+                        id=msg.frame_id,
+                        extended=bool(msg.is_extended_frame),
+                        start_bit=sig.start,
+                        length=sig.length,
+                        byte_order=BIG if sig.byte_order == "big_endian" else LITTLE,
+                        signed=bool(sig.is_signed),
+                        scale=float(sig.scale),
+                        offset=float(sig.offset),
+                        min=None if lo is None else float(lo),
+                        max=None if hi is None else float(hi),
+                        unit=sig.unit or "",
+                        mux_byte=mux_byte,
+                        mux_value=mux_value,
+                    )
                 )
-            )
     log.info("dbc %s: mapped %d of %d requested signals", path, len(out), len(name_map))
     return out
+
+
+def _whole_byte_index(sig) -> int | None:
+    """Byte index of an 8-bit, byte-aligned cantools signal, else None.
+
+    Byte-aligned means start bit 0 of a byte for Intel (LSB first) but bit 7 for Motorola
+    (MSB first); an Intel field at bit 7 or a Motorola one at bit 0 straddles two bytes.
+    """
+    if sig.length != 8:
+        return None
+    aligned_bit = 7 if sig.byte_order == "big_endian" else 0
+    if sig.start % 8 != aligned_bit:
+        return None
+    return sig.start // 8

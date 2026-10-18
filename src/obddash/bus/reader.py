@@ -26,8 +26,11 @@ Robustness rules
 * Multi-PID requests (``obd_multi_pid``) pack up to 6 fast PIDs per frame.  If two
   consecutive multi requests get no answer while the ECU is otherwise alive, the
   reader falls back to single-PID requests for the rest of the session.
-* ``7F 01 78`` (response pending) extends the wait; other negative responses release
-  the scheduler immediately and back the PID off.
+* ``7F 01 78`` (response pending) extends the wait.  Other negative responses end the
+  wait after a 50 ms grace (a functional request reaches every ECU, so one module's
+  refusal must not hide the engine ECU's answer); a PID nobody answered is backed off.
+* Every request, discovery and VIN included, is spaced by at least
+  ``1 / obd_max_rate_hz``.
 * The only shared mutations are ``raw.set/update`` (locked inside RawState) and the
   stats fields, all written under one lock.  ``stats`` is refreshed on read so the
   rolling rates are always current.
@@ -59,6 +62,10 @@ PID_BACKOFF_AFTER = 3  # consecutive misses before a PID is throttled
 PID_BACKOFF_S = 5.0
 MULTI_FALLBACK_MISSES = 2  # unanswered multi-PID requests before single-PID fallback
 RESPONSE_PENDING_S = 1.0  # extra wait after NRC 0x78
+# After a refusal (7F 01 xx) keep listening this long: a functional request reaches every
+# ECU, and one module refusing must not cut off the engine ECU's positive answer, which
+# ISO 15765-4 allows to come up to P2 = 50 ms after the request.
+NEGATIVE_GRACE_S = 0.05
 SEND_ERRORS_BEFORE_RECONNECT = 20
 
 
@@ -217,6 +224,9 @@ class CanReader:
         self._backoff: dict[int, float] = {}
         self._backoff_logged: set[int] = set()
         self._last_send_t = -1e9
+        self._min_interval = 1.0 / max(bus_cfg.obd_max_rate_hz, 0.1)
+        self._discovery_failures = 0
+        self._active_logged: tuple | None = None
 
     # ----------------------------------------------------------------------------------
     # public
@@ -390,8 +400,14 @@ class CanReader:
             if self.bus_cfg.log_unknown_ids:
                 with self._lock:
                     unk = self._stats.unknown_ids
-                    if arb in unk or len(unk) < 1024:
-                        unk[arb] = unk.get(arb, 0) + 1
+                    if arb in unk:
+                        unk[arb] += 1
+                    elif len(unk) < 1024:
+                        # copy-on-insert: whoever iterates / deep-copies stats.unknown_ids
+                        # in another thread never sees the dict change size under it
+                        unk = dict(unk)
+                        unk[arb] = 1
+                        self._stats.unknown_ids = unk
         except Exception:
             self._frame_errors += 1
             if self._frame_errors == 1:
@@ -421,7 +437,10 @@ class CanReader:
             self._stats.pid_responses += 1
             self._pid_meter.tick(now)
             for pids in resp.supported.values():
-                self._stats.supported_pids |= pids
+                if not pids <= self._stats.supported_pids:
+                    # replace, never mutate in place: readers of stats.supported_pids
+                    # (CLI deep copy, UI) may be iterating the old set right now
+                    self._stats.supported_pids = self._stats.supported_pids | pids
             if resp.vin and not self._stats.vin:
                 self._stats.vin = resp.vin
                 log.info("VIN %s", resp.vin)
@@ -492,18 +511,17 @@ class CanReader:
         if not (self._fast or self._medium or self._slow):
             log.info("no PIDs configured; OBD polling idle")
             return
-        min_interval = 1.0 / max(self.bus_cfg.obd_max_rate_hz, 0.1)
         errors = 0
         while self._running():
             try:
-                self._scheduler_step(min_interval)
+                self._scheduler_step()
             except Exception:
                 errors += 1
                 if errors <= 3:
                     log.exception("PID scheduler error")
                 self._sleep(0.5)
 
-    def _scheduler_step(self, min_interval: float) -> None:
+    def _scheduler_step(self) -> None:
         now = self._clock()
         if not self._discovered and now >= self._next_discovery:
             self._next_discovery = now + DISCOVERY_RETRY_S
@@ -520,10 +538,6 @@ class CanReader:
             self._sleep(0.1)
             return
         self._account(pids, pending, multi, now)
-        # rate limit between consecutive requests
-        wait = min_interval - (self._clock() - self._last_send_t)
-        if wait > 0:
-            self._sleep(wait)
 
     # -- PID lists ----------------------------------------------------------------------
     def _prepare_pid_lists(self) -> None:
@@ -573,6 +587,10 @@ class CanReader:
             self._stats.active_pids = self._fast + self._medium + self._slow
             self._stats.multi_pid = self._multi
             self._stats.discovered = self._discovered
+        summary = (tuple(self._fast), tuple(self._medium), tuple(self._slow), self._multi)
+        if summary == self._active_logged:
+            return  # unchanged (e.g. another failed discovery retry): don't repeat the log
+        self._active_logged = summary
         log.info(
             "polling %d fast / %d medium / %d slow PIDs%s%s",
             len(self._fast),
@@ -599,11 +617,15 @@ class CanReader:
             if p is not None and p.negative is not None:
                 break  # ECU is alive but refuses mode 01 PID 00: nothing to discover
         if not answered:
-            log.info(
+            # INFO once, then DEBUG: with the ignition off this repeats every 10 s for hours
+            self._discovery_failures += 1
+            log.log(
+                logging.INFO if self._discovery_failures == 1 else logging.DEBUG,
                 "no answer to PID 0x00 discovery; polling configured PIDs, retrying in %.0f s",
                 DISCOVERY_RETRY_S,
             )
             return False
+        self._discovery_failures = 0
         base = 0x20
         while base <= 0xC0 and self._running():
             with self._lock:
@@ -630,19 +652,29 @@ class CanReader:
     ) -> _Pending | None:
         """Send one request and wait for its answer (or the timeout).  None if the send failed."""
         cfg = self.bus_cfg
+        # Rate limit here, so discovery / VIN requests count too: consecutive requests
+        # are never closer than 1 / obd_max_rate_hz.
+        wait = self._min_interval - (self._clock() - self._last_send_t)
+        if wait > 0:
+            self._sleep(wait)
+            if not self._running():
+                return None
         msg = obd.build_request(pids, mode, extended=self._ext, request_id=cfg.obd_request_id)
         now = self._clock()
         pending = _Pending(mode, frozenset(pids), now)
+        # Clear BEFORE publishing the pending request: an answer that matches it as soon
+        # as it is visible must not have its wake-up wiped (that would cost a full timeout).
+        self._resp.clear()
         with self._lock:
             self._pending = pending
             self._stats.requests += 1
-        self._resp.clear()
         self._last_send_t = now
         if not self._send(msg):
             with self._lock:
                 self._pending = None
             return None
         deadline = now + (cfg.obd_timeout_s if timeout is None else timeout)
+        response_pending = False
         while self._running():
             remaining = deadline - self._clock()
             if remaining <= 0:
@@ -651,11 +683,15 @@ class CanReader:
                 break
             self._resp.clear()
             with self._lock:
-                if pending.answered or pending.negative is not None:
+                if pending.answered:
                     break
-                if pending.extend:
+                if pending.extend:  # some ECU said "busy, answer coming" (NRC 0x78)
                     pending.extend = False
+                    response_pending = True
                     deadline = self._clock() + RESPONSE_PENDING_S
+                elif pending.negative is not None and not response_pending:
+                    # refused - but maybe only by one of several ECUs: short grace, then go
+                    deadline = min(deadline, self._clock() + NEGATIVE_GRACE_S)
         with self._lock:
             self._pending = None
             if not pending.answered and pending.negative is None:

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import random
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -361,3 +363,85 @@ def test_load_dbc_with_cantools(tmp_path):
     assert dec.decode(0x201, _frame("88 FF 00 00 00 00 00 00"))[Sig.STEERING_DEG] == pytest.approx(
         -12.0
     )
+
+
+# --------------------------------------------------------------------------------------
+# load_dbc edge cases against a stub cantools (runs without the optional dependency)
+# --------------------------------------------------------------------------------------
+def _stub_signal(name, start, length, order, *, mux_ids=None, mux_signal=None, is_mux=False,
+                 minimum=None, maximum=None):  # fmt: skip
+    return SimpleNamespace(
+        name=name,
+        start=start,
+        length=length,
+        byte_order=order,
+        is_signed=False,
+        scale=1.0,
+        offset=0.0,
+        minimum=minimum,
+        maximum=maximum,
+        unit="",
+        is_multiplexer=is_mux,
+        multiplexer_ids=mux_ids,
+        multiplexer_signal=mux_signal,
+    )
+
+
+def _stub_cantools(monkeypatch, messages):
+    db = SimpleNamespace(messages=messages)
+    database = SimpleNamespace(load_file=lambda _path: db)
+    monkeypatch.setitem(sys.modules, "cantools", SimpleNamespace(database=database))
+
+
+def _stub_message(frame_id, name, signals):
+    return SimpleNamespace(frame_id=frame_id, name=name, is_extended_frame=False, signals=signals)
+
+
+def test_load_dbc_multiplexer_alignment_depends_on_byte_order(monkeypatch, caplog):
+    """A whole-byte mux starts at bit 0 (Intel) or bit 7 (Motorola).  An Intel 8-bit mux at
+    bit 7 straddles bytes 0-1 and a Motorola one at bit 0 straddles bytes 0-1 too, so they
+    cannot be expressed as ``mux_byte`` and must be skipped, not silently mis-decoded."""
+    msgs = [
+        _stub_message(0x300, "GOOD_BE", [
+            _stub_signal("MuxBE", 7, 8, BE, is_mux=True),
+            _stub_signal("A", 15, 8, BE, mux_ids=[2], mux_signal="MuxBE"),
+        ]),
+        _stub_message(0x301, "GOOD_LE", [
+            _stub_signal("MuxLE", 8, 8, LE, is_mux=True),
+            _stub_signal("B", 0, 8, LE, mux_ids=[3], mux_signal="MuxLE"),
+        ]),
+        _stub_message(0x302, "BAD_LE", [
+            _stub_signal("MuxX", 7, 8, LE, is_mux=True),
+            _stub_signal("C", 16, 8, LE, mux_ids=[1], mux_signal="MuxX"),
+        ]),
+        _stub_message(0x303, "BAD_BE", [
+            _stub_signal("MuxY", 0, 8, BE, is_mux=True),
+            _stub_signal("D", 23, 8, BE, mux_ids=[1], mux_signal="MuxY"),
+        ]),
+    ]  # fmt: skip
+    _stub_cantools(monkeypatch, msgs)
+    cfgs = sg.load_dbc("x.dbc", {"A": "a", "B": "b", "C": "c", "D": "d"})
+    by_name = {c.name: c for c in cfgs}
+    assert set(by_name) == {"a", "b"}
+    assert (by_name["a"].mux_byte, by_name["a"].mux_value) == (0, 2)
+    assert (by_name["b"].mux_byte, by_name["b"].mux_value) == (1, 3)
+    assert "not a whole byte" in caplog.text
+
+
+def test_load_dbc_every_multiplexer_id_and_zero_range(monkeypatch):
+    """A signal valid for several mux values decodes under each of them, and the DBC
+    "[0|0]" range (older cantools pass it through as 0/0) means "no limits"."""
+    msgs = [
+        _stub_message(0x310, "M", [
+            _stub_signal("Mux", 7, 8, BE, is_mux=True),
+            _stub_signal("Val", 15, 8, BE, mux_ids=[1, 4], mux_signal="Mux",
+                         minimum=0.0, maximum=0.0),
+        ])
+    ]  # fmt: skip
+    _stub_cantools(monkeypatch, msgs)
+    cfgs = sg.load_dbc("x.dbc", {"M.Val": Sig.BRAKE_PRESSURE_BAR})
+    assert [(c.mux_value, c.min, c.max) for c in cfgs] == [(1, None, None), (4, None, None)]
+    dec = SignalDecoder(cfgs)
+    assert dec.decode(0x310, _frame("01 2A")) == {Sig.BRAKE_PRESSURE_BAR: 42.0}
+    assert dec.decode(0x310, _frame("04 2B")) == {Sig.BRAKE_PRESSURE_BAR: 43.0}
+    assert dec.decode(0x310, _frame("02 2C")) == {}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import threading
 import time
 import uuid
@@ -16,6 +17,8 @@ from obddash.model import RawState, Sig
 
 VIN = "WAUZZZ8V9KA123456"
 REQ_ID, RESP_ID, PHYS_ID = 0x7DF, 0x7E8, 0x7E0
+# 29-bit (ISO 15765-4 extended): ECU address 0x10, tester 0xF1
+REQ_ID_29, RESP_ID_29, PHYS_ID_29 = 0x18DB33F1, 0x18DAF110, 0x18DA10F1
 
 # raw bytes the fake ECU answers with
 ECU_VALUES = {
@@ -40,6 +43,10 @@ class FakeEcu(threading.Thread):
         answer_discovery: bool = True,
         answer_multi: bool = True,
         vin: str | None = VIN,
+        extended: bool = False,
+        resp_id: int | None = None,
+        refuse: bool = False,
+        delay_s: float = 0.0,
     ):
         super().__init__(name="fake-ecu", daemon=True)
         self.bus = can.Bus(interface="virtual", channel=channel)
@@ -47,7 +54,19 @@ class FakeEcu(threading.Thread):
         self.answer_discovery = answer_discovery
         self.answer_multi = answer_multi
         self.vin = vin
+        self.extended = extended
+        if extended:
+            self.resp_id = resp_id or RESP_ID_29
+            self.phys_id = obd.flow_control_target(self.resp_id, extended=True)
+            self.req_ids = (REQ_ID_29, self.phys_id)
+        else:
+            self.resp_id = resp_id or RESP_ID
+            self.phys_id = self.resp_id - 8
+            self.req_ids = (REQ_ID, self.phys_id)
+        self.refuse = refuse  # answer every request with 7F <mode> 12 (a gateway that says no)
+        self.delay_s = delay_s  # answer latency
         self.requests: list[tuple[int, list[int]]] = []
+        self.request_times: list[float] = []  # sender-side timestamps (virtual bus)
         self.fc_received = 0
         self._quit = threading.Event()
         self._deferred: list[can.Message] = []
@@ -58,8 +77,10 @@ class FakeEcu(threading.Thread):
         self.join(timeout=2.0)
         self.bus.shutdown()
 
-    def broadcast(self, arbitration_id: int, data: bytes):
-        self.bus.send(can.Message(arbitration_id=arbitration_id, data=data, is_extended_id=False))
+    def broadcast(self, arbitration_id: int, data: bytes, *, extended: bool = False):
+        self.bus.send(
+            can.Message(arbitration_id=arbitration_id, data=data, is_extended_id=extended)
+        )
 
     # -- loop --
     def run(self):
@@ -70,7 +91,11 @@ class FakeEcu(threading.Thread):
                 msg = self.bus.recv(0.02)
             if msg is None:
                 continue
-            if msg.arbitration_id in (REQ_ID, PHYS_ID) and (msg.data[0] >> 4) == 0:
+            if (
+                msg.arbitration_id in self.req_ids
+                and msg.is_extended_id == self.extended
+                and (msg.data[0] >> 4) == 0
+            ):
                 self._answer(msg)
 
     def _answer(self, msg: can.Message):
@@ -78,6 +103,12 @@ class FakeEcu(threading.Thread):
         mode = msg.data[1]
         pids = list(msg.data[2 : 1 + n])
         self.requests.append((mode, pids))
+        self.request_times.append(msg.timestamp)
+        if self.delay_s:
+            time.sleep(self.delay_s)
+        if self.refuse:
+            self._send_payload(bytes([0x7F, mode, obd.NRC_SUBFUNCTION_NOT_SUPPORTED]))
+            return
         if mode == 0x01:
             if len(pids) > 1 and not self.answer_multi:
                 return
@@ -95,7 +126,7 @@ class FakeEcu(threading.Thread):
 
     def _send_payload(self, payload: bytes):
         frames = obd.split_multi_frame(payload)
-        self.bus.send(can.Message(arbitration_id=RESP_ID, data=frames[0], is_extended_id=False))
+        self._send_frame(frames[0])
         if len(frames) == 1:
             return
         # wait for the tester's flow control (30 xx xx) on our physical id
@@ -104,14 +135,23 @@ class FakeEcu(threading.Thread):
             m = self.bus.recv(0.02)
             if m is None:
                 continue
-            if m.arbitration_id == PHYS_ID and (m.data[0] >> 4) == 0x3:
+            if (
+                m.arbitration_id == self.phys_id
+                and m.is_extended_id == self.extended
+                and (m.data[0] >> 4) == 0x3
+            ):
                 self.fc_received += 1
                 break
             self._deferred.append(m)
         else:
             return  # no flow control: a real ECU gives up too
         for f in frames[1:]:
-            self.bus.send(can.Message(arbitration_id=RESP_ID, data=f, is_extended_id=False))
+            self._send_frame(f)
+
+    def _send_frame(self, data: bytes):
+        self.bus.send(
+            can.Message(arbitration_id=self.resp_id, data=data, is_extended_id=self.extended)
+        )
 
 
 def wait_until(pred, timeout=3.0, step=0.02) -> bool:
@@ -376,3 +416,176 @@ def test_pid_without_decoder_is_not_polled(channel, ecu):
         assert 0xE5 not in {p for m, ps in ecu.requests for p in ps}
     finally:
         reader.stop()
+
+
+# --------------------------------------------------------------------------------------
+# adversarial cases (independent review)
+# --------------------------------------------------------------------------------------
+def test_extended_29bit_addressing_end_to_end(channel):
+    """29-bit OBD: requests on 0x18DB33F1, answers from 0x18DAF110 (accepted by mask even
+    though obd_response_ids keeps its 11-bit default), flow control to 0x18DA10F1."""
+    ecu = FakeEcu(channel, extended=True)
+    ecu.start()
+    cfg = BusConfig(interface="virtual", channel=channel, obd_extended_ids=True)
+    reader, raw, _bus = make_reader(channel, bus_cfg=cfg)
+    reader.start()
+    try:
+        assert wait_until(lambda: raw.has(Sig.RPM) and raw.has(Sig.SPEED_KPH), 2.0)
+        assert raw.get(Sig.RPM) == 1726.0
+        assert reader.stats.supported_pids == ecu.supported
+        assert wait_until(lambda: reader.stats.vin == VIN, 1.5)  # FF -> 29-bit FC -> CFs
+        assert ecu.fc_received >= 1
+    finally:
+        reader.stop()
+        ecu.stop()
+
+
+def test_request_rate_cap_includes_discovery_and_vin(channel, ecu):
+    """The ECU answers instantly; requests must still be >= 1/obd_max_rate_hz apart, from
+    the very first discovery request on (discovery / VIN used to go out back to back)."""
+    cfg = BusConfig(interface="virtual", channel=channel, obd_max_rate_hz=20.0)
+    reader, _raw, _bus = make_reader(channel, bus_cfg=cfg)
+    reader.start()
+    try:
+        assert wait_until(lambda: len(ecu.request_times) >= 10, 3.0)
+    finally:
+        reader.stop()
+    assert ecu.requests[0] == (0x01, [0x00]) and ecu.requests[1] == (0x09, [0x02])
+    ts = ecu.request_times[:10]
+    gaps = [b - a for a, b in zip(ts[:-1], ts[1:], strict=True)]
+    assert min(gaps) >= 0.05 - 0.005, gaps
+
+
+def test_refusal_from_another_ecu_does_not_hide_engine_answers(channel):
+    """Functional requests reach every module.  A gateway at 0x7E9 that refuses everything
+    immediately (7F 01 12) must not make the reader drop the engine ECU's positive
+    answers that arrive a few ms later: no back-off, discovery succeeds, RPM flows."""
+    engine = FakeEcu(channel, delay_s=0.01)
+    gateway = FakeEcu(channel, resp_id=0x7E9, refuse=True)
+    engine.start()
+    gateway.start()
+    vehicle = VehicleConfig(
+        pids=[PidRequest(pid=0x0C, rate="fast"), PidRequest(pid=0x0D, rate="fast")]
+    )
+    reader, raw, _bus = make_reader(channel, vehicle=vehicle)
+    reader.start()
+    try:
+        assert wait_until(lambda: raw.has(Sig.RPM), 2.0)
+        assert wait_until(lambda: reader.stats.discovered, 1.0)
+        assert reader.stats.supported_pids == engine.supported
+        before = raw.counts()[Sig.RPM]
+        time.sleep(1.0)
+        assert raw.counts()[Sig.RPM] - before >= 10  # ~25/s here; was 0 (5 s back-off)
+        assert reader.stats.ecu_ok
+    finally:
+        reader.stop()
+        engine.stop()
+        gateway.stop()
+
+
+def test_malformed_frames_on_response_id_do_not_disturb_polling(channel, ecu):
+    reader, raw, _bus = make_reader(channel)
+    reader.start()
+    try:
+        assert wait_until(lambda: raw.has(Sig.RPM) and reader.stats.vin == VIN, 2.0)
+        junk = [
+            b"",  # DLC 0
+            bytes.fromhex("00"),  # single frame, length 0 (CAN-FD escape)
+            bytes.fromhex("0F41"),  # single frame claiming 15 bytes
+            bytes.fromhex("1005410C1AF8"),  # first frame with total <= 7
+            bytes.fromhex("1FFF490201414243"),  # first frame of 4095 bytes, never finished
+            bytes.fromhex("2541424344454647"),  # stray consecutive frame
+            bytes.fromhex("02410C"),  # positive response truncated inside the PID data
+            bytes.fromhex("0141"),  # service byte only
+            bytes.fromhex("F0FFFFFFFFFFFFFF"),  # invalid PCI type
+        ]
+        for data in junk:
+            ecu.broadcast(RESP_ID, data)
+        before = raw.counts()[Sig.RPM]
+        assert wait_until(lambda: raw.counts()[Sig.RPM] > before + 5, 2.0)
+        assert raw.get(Sig.RPM) == 1726.0
+        assert reader.running and reader.stats.bus_ok and reader.stats.ecu_ok
+        assert reader._frame_errors == 0  # nothing even reached the exception handler
+    finally:
+        reader.stop()
+
+
+class _FlakyBus(can.BusABC):
+    """A virtual bus whose adapter can be 'unplugged': recv/send then raise."""
+
+    def __init__(self, channel: str, real_bus_factory):
+        self._inner = real_bus_factory(interface="virtual", channel=channel)
+        self.unplugged = False
+        self.channel_info = "flaky"
+        super().__init__(channel=channel)
+
+    def _recv_internal(self, timeout):
+        if self.unplugged:
+            time.sleep(0.01)
+            raise can.CanOperationError("adapter unplugged")
+        return self._inner.recv(timeout), False
+
+    def send(self, msg, timeout=None):
+        if self.unplugged:
+            raise can.CanOperationError("adapter unplugged")
+        self._inner.send(msg, timeout)
+
+    def shutdown(self):
+        super().shutdown()
+        self._inner.shutdown()
+
+
+def test_own_bus_open_failure_then_error_then_reconnect(channel, ecu, monkeypatch):
+    """No injected bus: the reader opens it itself, survives a failing open, and after an
+    adapter error tears down and reopens (RECONNECT_S shortened for the test)."""
+    from obddash.bus import reader as reader_mod
+
+    monkeypatch.setattr(reader_mod, "RECONNECT_S", 0.1)
+    real_bus = can.Bus
+    opened: list[_FlakyBus] = []
+
+    def factory(**kwargs):
+        if not opened and not getattr(factory, "failed", False):
+            factory.failed = True
+            raise OSError("No such device")
+        bus = _FlakyBus(channel, real_bus)
+        opened.append(bus)
+        return bus
+
+    monkeypatch.setattr(can, "Bus", factory)
+    raw = RawState()
+    reader = CanReader(BusConfig(interface="virtual", channel=channel), VehicleConfig(), raw)
+    reader.start()
+    try:
+        assert wait_until(lambda: raw.has(Sig.RPM), 3.0)  # second open attempt worked
+        assert reader.stats.bus_ok and len(opened) == 1
+        opened[0].unplugged = True
+        assert wait_until(lambda: not reader.stats.bus_ok, 2.0)
+        assert "unplugged" in (reader.stats.last_error or "")
+        raw.clear()
+        assert wait_until(lambda: raw.has(Sig.RPM) and reader.stats.bus_ok, 3.0)
+        assert len(opened) == 2 and opened[0]._is_shutdown  # old one closed, new one used
+    finally:
+        reader.stop()
+    assert opened[-1]._is_shutdown
+    assert wait_until(lambda: not obddash_threads(), 1.0)
+
+
+def test_stats_containers_are_replaced_not_mutated(channel, ecu):
+    """Other threads read reader.stats (the CLI deep-copies it while the reader runs), so
+    sets/dicts inside it are swapped for new objects, never grown in place."""
+    cfg = BusConfig(interface="virtual", channel=channel, log_unknown_ids=True)
+    reader, raw, _bus = make_reader(channel, bus_cfg=cfg)
+    early_supported = reader.stats.supported_pids
+    early_unknown = reader.stats.unknown_ids
+    reader.start()
+    try:
+        ecu.broadcast(0x123, bytes(8))
+        assert wait_until(lambda: reader.stats.discovered, 2.0)
+        assert wait_until(lambda: 0x123 in reader.stats.unknown_ids, 1.0)
+        snap = copy.deepcopy(reader.stats)  # what `obddash pids` does mid-run
+        assert snap.supported_pids == ecu.supported
+    finally:
+        reader.stop()
+    assert early_supported == set() and early_unknown == {}
+    assert reader.stats.supported_pids == ecu.supported
