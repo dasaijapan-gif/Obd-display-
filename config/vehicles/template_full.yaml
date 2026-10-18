@@ -1,0 +1,47 @@
+# Template for your own car.  Copy, rename, fill in.  Anything you leave out falls back
+# to the defaults in src/obddash/config.py.
+name: My Car
+transmission: manual          # manual | auto  (auto disables rev-match scoring)
+
+# --- physics (gear estimate + virtual dyno) ------------------------------------------
+mass_kg: 1400                 # curb weight + driver + fuel + the display :)
+cd: 0.32                      # drag coefficient
+frontal_area_m2: 2.1
+crr: 0.012                    # rolling resistance (0.010 summer tyres .. 0.015 all-season)
+tire_circumference_m: 1.95    # rolling circumference of the DRIVEN tyres; measure or
+                              # compute: pi * (rim_in*25.4 + 2*width_mm*aspect/100) / 1000
+gear_ratios: [3.6, 2.1, 1.4, 1.0, 0.8, 0.65]
+final_drive: 3.9
+drivetrain_efficiency: 0.85   # ~0.85 RWD manual, ~0.88 FWD manual, ~0.80 AWD / auto
+rotational_inertia_factor: 1.08
+idle_rpm: 800
+redline_rpm: 6500
+shift_light_rpm: 6000
+wheelbase_m: 2.6
+steering_ratio: 15            # steering wheel degrees per road wheel degree
+
+brake:
+  max_pressure_bar: 100       # full-scale for the gauge (typical road car max ~80-150 bar)
+  active_threshold_bar: 2
+  estimate_bar_per_g: 60      # only used when no brake_pressure_bar signal is listed
+
+# --- which standard PIDs to poll (optional; defaults cover the usual set) -----------
+# pids:
+#   - { pid: 0x0C, rate: fast }
+#   - { pid: 0x0D, rate: fast }
+#   - { pid: 0x11, rate: fast }
+#   - { pid: 0x05, rate: slow }
+
+# --- manufacturer broadcast signals ------------------------------------------------
+# DBC conventions: big_endian (Motorola) start_bit = MSB bit number; little_endian
+# (Intel) start_bit = LSB bit number.  Or just give `byte:` for byte-aligned fields.
+# Fill `id` from `obddash scan` or a DBC file for your model.  Names must match
+# src/obddash/model.py::Sig to be used by the metrics.
+signals: []
+#  - { name: brake_pressure_bar, id: 0x000, byte: 0, length: 16, scale: 0.01, unit: bar }
+#  - { name: steering_deg,       id: 0x000, byte: 0, length: 16, signed: true, scale: 0.1 }
+#  - { name: yaw_rate_dps,       id: 0x000, byte: 2, length: 16, signed: true, scale: 0.01 }
+#  - { name: wheel_speed_fl_kph, id: 0x000, byte: 0, length: 16, scale: 0.01 }
+#  - { name: brake_switch,       id: 0x000, start_bit: 48, length: 1 }
+#  - { name: clutch_switch,      id: 0x000, start_bit: 49, length: 1 }
+#  - { name: gear,               id: 0x000, byte: 0, length: 8 }

@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+recordings/
+*.jsonl
+!tests/fixtures/*.jsonl
+.playwright/
+node_modules/
+screenshots/*.tmp.png

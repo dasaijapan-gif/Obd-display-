@@ -1,0 +1,44 @@
+# obddash app configuration.  Everything here has a sensible default; delete what you
+# don't need.  Values accept hex strings ("0x7DF") where an id is expected.
+
+bus:
+  interface: socketcan        # socketcan (Pi CAN HAT), slcan (USB adapter), virtual (sim)
+  channel: can0
+  bitrate: 500000             # 500 kbit/s is the norm for OBD-II on CAN (ISO 15765-4)
+  obd_enabled: true
+  obd_request_id: 0x7DF
+  obd_response_ids: [0x7E8, 0x7E9, 0x7EA, 0x7EB, 0x7EC, 0x7ED, 0x7EE, 0x7EF]
+  obd_max_rate_hz: 60
+  obd_multi_pid: false       # true = up to 6 PIDs per request on ECUs that allow it (faster)
+  passive_enabled: true       # decode the vehicle-specific signals from the vehicle file
+
+imu:
+  enabled: false              # set true with an MPU6050 on I2C for real G-forces
+  driver: mpu6050
+  i2c_bus: 1
+  address: 0x68
+  axis_lon: "+x"
+  axis_lat: "+y"
+  axis_vert: "+z"
+
+server:
+  host: 0.0.0.0
+  port: 8080
+  ws_rate_hz: 30
+
+metrics:
+  tick_hz: 50
+  revmatch:
+    perfect_pct: 2.0
+    zero_pct: 15.0
+  dyno:
+    min_throttle_pct: 85
+    preferred_gears: [3, 4]
+    correction: sae
+
+recording:
+  enabled: false
+  dir: recordings
+
+# Which car?  Relative to this file.  See config/vehicles/README.md.
+vehicle_file: vehicles/generic_obd.yaml

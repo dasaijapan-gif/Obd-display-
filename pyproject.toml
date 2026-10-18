@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "obddash"
+version = "0.1.0"
+description = "Schematic-style in-car telemetry display: OBD-II/CAN, rev-match scoring, virtual dyno, brake analysis"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "python-can>=4.4",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+    "pyyaml>=6",
+]
+
+[project.optional-dependencies]
+imu = ["smbus2>=0.4"]
+dbc = ["cantools>=39"]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",
+    "websockets>=12",
+    "ruff>=0.6",
+    "playwright>=1.45",
+]
+
+[project.scripts]
+obddash = "obddash.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+obddash = ["web/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]

@@ -1,0 +1,42 @@
+# Vehicle used by the built-in simulator (`obddash sim`).  Loosely a 2.0 L, 6-speed,
+# rear-drive roadster.  The broadcast CAN ids below are INVENTED for the simulator's
+# fake ECU; real cars use different ids (see template_full.yaml / `obddash scan`).
+name: Sim Sportscar (6MT)
+transmission: manual
+mass_kg: 1130
+cd: 0.33
+frontal_area_m2: 1.85
+crr: 0.011
+tire_circumference_m: 1.93
+gear_ratios: [5.087, 2.991, 1.594, 1.000, 0.713, 0.600]
+final_drive: 2.866
+drivetrain_efficiency: 0.86
+rotational_inertia_factor: 1.08
+idle_rpm: 850
+redline_rpm: 7500
+shift_light_rpm: 7000
+wheelbase_m: 2.31
+steering_ratio: 15.5
+brake:
+  max_pressure_bar: 120
+  active_threshold_bar: 2
+signals:
+  # id 0x200: brake pressures, 50 Hz.  bytes 0-1 system, 2-3 front, 4-5 rear (0.01 bar/bit)
+  - { name: brake_pressure_bar,       id: 0x200, byte: 0, length: 16, scale: 0.01, min: 0, max: 250, unit: bar }
+  - { name: brake_pressure_front_bar, id: 0x200, byte: 2, length: 16, scale: 0.01, min: 0, max: 250, unit: bar }
+  - { name: brake_pressure_rear_bar,  id: 0x200, byte: 4, length: 16, scale: 0.01, min: 0, max: 250, unit: bar }
+  - { name: brake_switch,             id: 0x200, start_bit: 48, length: 1 }   # byte 6 bit 0
+  - { name: clutch_switch,            id: 0x200, start_bit: 49, length: 1 }   # byte 6 bit 1
+  # id 0x201: chassis, 50 Hz.  steering wheel angle (0.1 deg/bit, signed, + = left),
+  # yaw rate (0.01 deg/s per bit, signed), lateral & longitudinal accel (0.001 g/bit, signed)
+  - { name: steering_deg,  id: 0x201, byte: 0, length: 16, signed: true, scale: 0.1,   unit: deg }
+  - { name: yaw_rate_dps,  id: 0x201, byte: 2, length: 16, signed: true, scale: 0.01,  unit: deg/s }
+  - { name: acc_lat_g,     id: 0x201, byte: 4, length: 16, signed: true, scale: 0.001, unit: g }
+  - { name: acc_lon_g,     id: 0x201, byte: 6, length: 16, signed: true, scale: 0.001, unit: g }
+  # id 0x202: wheel speeds, 50 Hz, 0.01 km/h per bit
+  - { name: wheel_speed_fl_kph, id: 0x202, byte: 0, length: 16, scale: 0.01 }
+  - { name: wheel_speed_fr_kph, id: 0x202, byte: 2, length: 16, scale: 0.01 }
+  - { name: wheel_speed_rl_kph, id: 0x202, byte: 4, length: 16, scale: 0.01 }
+  - { name: wheel_speed_rr_kph, id: 0x202, byte: 6, length: 16, scale: 0.01 }
+  # id 0x203: transmission, 20 Hz.  byte 0 = gear as signed int8: -1 R, 0 N, 1..6
+  - { name: gear, id: 0x203, byte: 0, length: 8, signed: true }

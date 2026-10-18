@@ -1,0 +1,21 @@
+# Any OBD-II (CAN) car, standard PIDs only.  Edit the physical parameters for your car
+# so the gear estimate and dyno numbers mean something.
+name: Generic OBD-II car
+transmission: manual
+mass_kg: 1400          # with driver and half a tank
+cd: 0.32
+frontal_area_m2: 2.1
+crr: 0.012
+tire_circumference_m: 1.95
+gear_ratios: [3.6, 2.1, 1.4, 1.0, 0.8, 0.65]
+final_drive: 3.9
+drivetrain_efficiency: 0.85
+idle_rpm: 800
+redline_rpm: 6500
+shift_light_rpm: 6000
+wheelbase_m: 2.6
+steering_ratio: 15
+brake:
+  max_pressure_bar: 100
+  estimate_bar_per_g: 60   # used because no pressure signal is listed below
+signals: []
