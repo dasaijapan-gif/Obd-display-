@@ -76,7 +76,9 @@ class BusConfig(BaseModel):
     obd_extended_ids: bool = False  # 29-bit OBD (0x18DB33F1 / 0x18DAF1xx) if True
     obd_timeout_s: float = 0.25  # per-request response timeout
     obd_max_rate_hz: float = 60.0  # never send requests faster than this
-    obd_multi_pid: bool = False  # request up to 6 PIDs per frame (ISO 15031-5); falls back if unsupported
+    obd_multi_pid: bool = (
+        False  # request up to 6 PIDs per frame (ISO 15031-5); falls back if unsupported
+    )
     passive_enabled: bool = True  # decode vehicle broadcast signals
     log_unknown_ids: bool = False
 
@@ -287,7 +289,9 @@ def load_vehicle(path: str | Path) -> VehicleConfig:
     return VehicleConfig.model_validate(load_yaml(path))
 
 
-def load_config(path: str | Path | None = None, vehicle_path: str | Path | None = None) -> AppConfig:
+def load_config(
+    path: str | Path | None = None, vehicle_path: str | Path | None = None
+) -> AppConfig:
     """Load the app config; ``vehicle_path`` (or the ``vehicle_file`` key) overrides the
     inline ``vehicle`` section."""
     if path is None:
