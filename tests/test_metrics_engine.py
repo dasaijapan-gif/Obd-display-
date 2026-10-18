@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
+import math
 
 import pytest
 
@@ -453,3 +455,120 @@ def test_sim_lap_shifts_and_dyno_match_ground_truth(vehicle):
     assert runs and runs[0]["gear"] == 3
     assert 95.0 < runs[0]["peak_power_kw"] < 125.0
     assert tel.brake.count >= 1
+
+
+# --------------------------------------------------------------------------------------
+# reviewer: adversarial cases
+# --------------------------------------------------------------------------------------
+def obd_only(vehicle, kph, gear, thr=20.0):
+    return {Sig.SPEED_KPH: kph, Sig.RPM: kph * vehicle.rpm_per_kph(gear), Sig.THROTTLE_PCT: thr}
+
+
+def test_non_finite_raw_values_are_treated_as_missing(vehicle):
+    """One NaN speed would otherwise make distance_km NaN for the rest of the session,
+    and an inf from the IMU would pin peak_lat / friction_used for good."""
+    rig = Rig(vehicle)
+    rig.tick(cruise_state(vehicle, 100.0, 4), n=50)
+    nan, inf = float("nan"), float("inf")
+    bad = {
+        Sig.SPEED_KPH: nan,
+        Sig.RPM: inf,
+        Sig.ACC_LAT_G: inf,
+        Sig.ACC_LON_G: nan,
+        Sig.BRAKE_PRESSURE_BAR: nan,
+        Sig.COOLANT_C: nan,
+        Sig.FUEL_RATE_LPH: inf,
+        **{s: nan for s in (Sig.WHEEL_SPEED_FL_KPH, Sig.WHEEL_SPEED_FR_KPH)},
+        **{s: nan for s in (Sig.WHEEL_SPEED_RL_KPH, Sig.WHEEL_SPEED_RR_KPH)},
+    }
+    rig.tick(bad, n=5)
+    tel = rig.tick(cruise_state(vehicle, 100.0, 4), n=50)
+    assert math.isfinite(tel.session.distance_km) and tel.session.distance_km > 0
+    assert tel.session.fuel_used_l is not None and math.isfinite(tel.session.fuel_used_l)
+    assert math.isfinite(tel.g.peak_lat) and tel.g.peak_lat < 1.0
+    assert tel.handling.friction_used_pct < 100.0
+    assert math.isfinite(tel.brake.peak_bar)
+    assert tel.veh.gear == 4
+    json.dumps(tel.to_dict(), allow_nan=False)
+
+
+def test_ecu_dropout_then_reconnect_in_another_gear(vehicle):
+    """The ECU goes silent for 2.5 s (the driver changes 4 -> 3 meanwhile), then
+    answers again: the display drops to 0, NO ECU shows, nothing raises, and no
+    phantom shift is scored for the engagement nobody saw."""
+    rig = Rig(vehicle)
+    rig.eng.set_connection(Connection(bus=True, ecu=True, source="can"))
+    rig.tick(obd_only(vehicle, 100.0, 4), n=100)
+    assert rig.tel.veh.gear == 4
+    rig.eng.set_connection(Connection(bus=True, ecu=False, source="can"))
+    tel = rig.tick(None, n=int(2.5 / DT))
+    assert (tel.veh.rpm, tel.veh.speed_kph, tel.veh.gear) == (0.0, 0.0, 0)
+    assert "NO ECU" in tel.alerts
+    rig.eng.set_connection(Connection(bus=True, ecu=True, source="can"))
+    tel = rig.tick(obd_only(vehicle, 95.0, 3), n=100)
+    assert tel.veh.gear == 3 and tel.veh.gear_source == "ratio"
+    assert "NO ECU" not in tel.alerts
+    names = [e.name for e in rig.eng.drain_events()]
+    assert "shift.scored" not in names
+    assert tel.shift.session.count == 0 and tel.shift.last is None
+
+
+def test_repeated_timestamps_do_not_double_count(vehicle):
+    """tick() called twice with the same t (dt = 0) must not integrate twice."""
+    once, twice = Rig(vehicle), Rig(vehicle)
+    state = cruise_state(vehicle, 100.0, 4)
+    for _ in range(250):
+        once.tick(state)
+        twice.now += DT
+        twice.raw.update(state)
+        twice.eng.tick(twice.raw, twice.now)
+        twice.tel = twice.eng.tick(twice.raw, twice.now)
+    a, b = once.tel, twice.tel
+    assert b.session.distance_km == pytest.approx(a.session.distance_km, rel=1e-9)
+    assert b.session.duration_s == pytest.approx(a.session.duration_s)
+    assert b.veh.gear == a.veh.gear == 4
+    assert len(b.g.trail) == len(a.g.trail)
+    assert len(b.brake.trace) == len(a.brake.trace)
+
+
+@pytest.mark.parametrize(
+    "path",
+    sorted(
+        (CONFIG_DIR.parent / "src" / "obddash" / "metrics").glob("*.py"),
+        key=lambda p: p.name,
+    ),
+    ids=lambda p: p.name,
+)
+def test_sources_parse_as_python_311(path):
+    """The Pi runs Python 3.11: no 3.12+ syntax (PEP 695 ``type`` aliases / generics)."""
+    with open(path, encoding="utf-8") as fh:
+        ast.parse(fh.read(), filename=str(path), feature_version=(3, 11))
+
+
+def test_fuzzed_raw_values_never_trip_an_analyzer(vehicle, caplog):
+    """Seeded fuzz: random signals (None-by-staleness, negative, huge, odd gear codes),
+    repeated / jumping / slightly backwards timestamps, commands and connection flips.
+    tick() hides analyzer exceptions behind a log line, so assert there were none."""
+    import random
+
+    rng = random.Random(7)
+    rig = Rig(vehicle)
+    names = Sig.all()
+    values = [0.0, -1.0, 1.0, 2.0, 7.0, 15.0, 1e9, -1e9]
+    cmds = ["dyno.arm", "dyno.cancel", "dyno.clear", "session.reset", "shift.reset", "x"]
+    with caplog.at_level(logging.ERROR, logger="obddash.metrics"):
+        for i in range(3000):
+            rig.now += rng.choice([0.0, 0.005, 0.02, 0.02, 0.02, 0.05, 0.3])
+            for _ in range(rng.randint(0, 6)):
+                v = rng.choice(values + [rng.uniform(-50, 300), rng.uniform(0, 9000)])
+                rig.raw.set(rng.choice(names), v)
+            if rng.random() < 0.01:
+                rig.eng.command(rng.choice(cmds))
+            if rng.random() < 0.02:
+                rig.eng.set_connection(Connection(bus=True, ecu=rng.random() < 0.5))
+            jitter = rng.random() * 0.5 if rng.random() < 0.01 else 0.0
+            tel = rig.eng.tick(rig.raw, rig.now - jitter)
+            rig.eng.drain_events()
+            if i % 250 == 0:
+                json.dumps(tel.to_dict(), allow_nan=False)
+    assert [r.getMessage() for r in caplog.records] == []

@@ -178,3 +178,21 @@ def test_smoothness_prefers_steady_pressure():
         jerky.tick(p=50.0 if i % 4 < 2 else 20.0)
     jerky.tick(p=0.0, n=20)
     assert steady.events[0].smoothness > jerky.events[0].smoothness
+
+
+def test_avg_decel_ignores_ticks_without_lon_g():
+    """lon_g is None for the first ticks (a speed-derived lon_g needs ~0.2 s of
+    history); those ticks must not drag the mean deceleration toward 0."""
+    rig = Rig()
+    rig.tick(p=0.0, n=10)
+    rig.tick(p=60.0, lon=None, n=10)  # first 0.2 s: no lon_g yet
+    rig.tick(p=60.0, lon=-0.8, n=40)
+    rig.tick(p=0.0, lon=0.0, n=20)
+    [ev] = rig.events
+    assert ev.avg_decel_g == pytest.approx(0.8, abs=1e-6)
+    # no lon_g at all -> 0, not a division error
+    rig2 = Rig()
+    rig2.tick(p=60.0, lon=None, n=30)
+    rig2.tick(p=0.0, n=20)
+    [ev2] = rig2.events
+    assert ev2.avg_decel_g == 0.0

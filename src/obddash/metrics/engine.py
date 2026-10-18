@@ -3,8 +3,8 @@
 Per tick (``tick(raw, t)``, ``t`` = monotonic seconds):
 
 1. Read every :class:`~obddash.model.Sig` with
-   ``raw.get(name, None, max_age=cfg.stale_s)``; a stale or absent signal is
-   ``None`` and every analyzer copes with ``None``.  Speed, rpm and wheel speeds
+   ``raw.get(name, None, max_age=cfg.stale_s)``; a stale, absent or non-finite
+   (NaN / inf) signal is ``None`` and every analyzer copes with ``None``.  Speed, rpm and wheel speeds
    use a 1 s staleness instead: they are fast PIDs, and when the ECU stops answering
    the display should drop to 0 quickly rather than freeze.
 2. Speed used by the analyzers: the mean of the wheel-speed signals when at least
@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import math
 import threading
 import time
 from typing import Any
@@ -196,7 +197,10 @@ class MetricsEngine:
         stale = cfg.stale_s
 
         def get(name: str, max_age: float = stale) -> float | None:
-            return raw.get(name, None, max_age=max_age)
+            v = raw.get(name, None, max_age=max_age)
+            # NaN / inf (a corrupt frame, a replay file) would poison every integral and
+            # peak for the rest of the session: treat it as missing
+            return v if v is None or math.isfinite(v) else None
 
         # -- read ------------------------------------------------------------------------
         speed_obd = get(Sig.SPEED_KPH, FAST_STALE_S)

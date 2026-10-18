@@ -47,13 +47,16 @@ Engagement (G' locked)
        converging on zero faster than 40 %/s - the clutch pulling - and, for an rpm
        *rising* toward the target, only while the throttle was below blip level (a
        rising engine with the throttle shut can only be the clutch; with it open it
-       is the blip).  When a clutch switch is in use, the walk-back stops at the
-       newest sample with the pedal still down: before that the clutch was open, so
-       any rpm change was the engine on its own.  This matters because a closed-
-       throttle engine in neutral decays at roughly 40-70 %/s (the sim: ~55 %/s),
-       which the rate test alone cannot tell from clutch drag.  The common
-       technique - over-blip, then let the revs fall to the target before releasing
-       the clutch - would otherwise be scored at the peak of the blip::
+       is the blip).  With a clutch switch, the newest pedal-down sample (the
+       switch transition, where the clutch may already be biting: switches rarely
+       sit exactly at the bite point) is judged the same way.  Each step back
+       *past* it needs more than 150 %/s (``MAX_FREE_REV_PCT_S``): with the pedal
+       down the clutch is open, so only a change no free-revving engine can make is
+       drag.  This matters because a closed-throttle engine in neutral decays at
+       about 40-70 %/s (the sim: ~55 %/s), which 40 %/s alone cannot tell from
+       drag.  Without it, the common technique - over-blip, then let the revs fall
+       to the target before releasing the clutch - is scored at the peak of the
+       blip.  Ratio-only cars have no such signal (see "Known limits")::
 
         target_rpm = speed_kph(ref) * rpm_per_kph(G')
         actual_rpm = rpm(ref)
@@ -90,8 +93,10 @@ never enter the averages, best score or history and do not replace ``last``.
 ``history`` keeps the last ``cfg.history`` scores.
 
 Ignored entirely (not counted): engagement below ``min_speed_kph``, a disengaged
-phase longer than 4 s (coasting in neutral, not a shift), a start from no known
-gear, and anything involving reverse.
+phase longer than 4 s (coasting in neutral, not a shift), a disengaged phase with
+rpm or speed missing on any tick (an ECU dropout: the engagement itself was not
+seen, so the rpm "presented" would really be the already-coupled rpm after the
+signal came back), a start from no known gear, and anything involving reverse.
 
 ``transmission: auto``: ratio changes are still detected and counted, nothing is
 scored and ``state`` stays ``"idle"``.
@@ -104,6 +109,18 @@ when given, else 1/0 from ``brake_active``.
 Live hint: ``target_gear = current gear - 1`` and ``target_rpm`` = its rpm at the
 current speed (None for no lower gear, above redline, unknown speed, or auto).
 ``shift_light = rpm >= vehicle.shift_light_rpm``.
+
+Known limits
+    * The drag that happens while the clutch switch still reads "pressed" (the
+      switch flips after the bite) is only partly walked back.  In the sim (switch
+      at half pedal, bite at 30 % engagement) this reads mismatches 0.5 % closer to
+      zero on average (worst ~2 %).
+    * Ratio-only cars (no clutch switch, no gear signal) cannot tell a closed-
+      throttle decay through the new gear's +-6 % window from an engagement.  With
+      1 km/h OBD speed steps, the decaying ratio can look stable for three ticks.
+      An over-blip that the driver lets fall back before releasing the clutch can
+      then be scored at the rpm where it entered the window (sim: +6 % read for a
+      true -2 %).
 """
 
 from __future__ import annotations
@@ -235,6 +252,7 @@ class ShiftAnalyzer:
         self._t_dis = 0.0
         self._blipping = False
         self._clutch_seen = False  # a clutch switch was pressed during this disengagement
+        self._data_gap = False  # rpm or speed went missing during this disengagement
         self._pending: _Pending | None = None
         self._scores_sum = 0.0
         self._n_scored = 0
@@ -310,9 +328,12 @@ class ShiftAnalyzer:
                 self._disengaged = True
                 self._t_dis = t
                 self._clutch_seen = False
+                self._data_gap = False
         if self._disengaged:
             if clutch_switch is True:
                 self._clutch_seen = True
+            if rpm is None or speed_kph is None:
+                self._data_gap = True  # dropout: whatever happens next was not observed
             if not locked:
                 self._blipping = (
                     throttle_pct is not None and throttle_pct >= self.cfg.blip_min_throttle_pct
@@ -337,6 +358,9 @@ class ShiftAnalyzer:
         duration = max(0.0, t_eng - t_dis)
         if duration > NEUTRAL_S:
             log.debug("ignored %d->%d: disengaged %.1fs (neutral)", from_gear, new_gear, duration)
+            return None
+        if self._data_gap:
+            log.debug("ignored %d->%d: rpm / speed missing while disengaged", from_gear, new_gear)
             return None
         rpk = self.vehicle.rpm_per_kph(new_gear)
         if not rpk:
@@ -453,12 +477,13 @@ class ShiftAnalyzer:
                 return ticks[-1]
             best, e_best = prev, e_prev
             k -= 1
-        # step 2: walk back through the clutch drag - but never past a sample with the
-        # clutch pedal down: the clutch was open there, so earlier rpm changes were the
-        # engine itself (e.g. a closed-throttle decay after an over-blip), not drag
-        if best[1][_CLU]:
-            return best
+        # step 2: walk back through the clutch drag.  The newest sample with the clutch
+        # pedal down is the switch transition (the clutch may already be biting) and is
+        # judged like any other; behind it the clutch was open, so only a change faster
+        # than any free-revving engine counts as drag there.  A slower one - e.g. the
+        # closed-throttle decay after an over-blip - is the engine itself.
         t_limit = best[0] - WALKBACK_MAX_S
+        pedal_down_seen = bool(best[1][_CLU])
         for cand in reversed(pts[:k]):
             if cand[0] < t_limit:
                 break
@@ -470,14 +495,14 @@ class ShiftAnalyzer:
             if abs(e) <= abs(e_best) + 0.2:
                 break  # not converging
             rate = (abs(e) - abs(e_best)) / max(1e-3, best[0] - cand[0])
-            if rate < WALKBACK_MIN_RATE_PCT_S:
+            min_rate = MAX_FREE_REV_PCT_S if pedal_down_seen else WALKBACK_MIN_RATE_PCT_S
+            if rate < min_rate:
                 break  # as slow as a free-revving engine: not the clutch
+            pedal_down_seen = pedal_down_seen or cand[1][_CLU]
             thr = cand[1][_THR]
             if e < 0 and thr is not None and thr >= blip_min:
                 break  # rpm rising on the throttle: that is the blip
             best, e_best = cand, e
-            if cand[1][_CLU]:
-                break  # the last pedal-down sample: as far back as the drag can go
         return best
 
     def _jolt(self, p: _Pending) -> float | None:

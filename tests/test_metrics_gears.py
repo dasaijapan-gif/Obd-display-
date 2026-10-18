@@ -200,6 +200,22 @@ def test_can_reverse_and_neutral(vehicle):
     assert est.gear == 0 and not est.locked
 
 
+def test_out_of_range_can_gear_code_is_not_a_gear(vehicle):
+    """Many cars broadcast an "invalid" code (7, 15) while the lever is between gates.
+    It must not be reported - let alone locked - as a gear (that produced a phantom
+    "15 -> 3" downshift); the ratio is used instead, and the real gear wins again."""
+    f = Feed(vehicle)
+    f.in_gear(4, 100, gear=4, n=5)
+    est = f.tick(3300, 100, gear=15, n=10)  # free-revving between 4th and 3rd
+    assert est.gear != 15 and est.source == "ratio" and not est.locked
+    est = f.in_gear(4, 100, gear=7, n=5)  # still coupled in 4th: the ratio says so
+    assert est.source == "ratio" and est.locked and est.gear == 4
+    est = f.tick(900, 50, gear=-3, n=3)
+    assert est.gear != -3
+    est = f.in_gear(3, 100, gear=3, n=3)
+    assert est.source == "can" and est.locked and est.gear == 3
+
+
 # --------------------------------------------------------------------------------------
 # filters
 # --------------------------------------------------------------------------------------

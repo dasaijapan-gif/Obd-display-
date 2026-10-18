@@ -22,7 +22,8 @@ for 0.2 s (``duration`` runs to the moment it went inactive).  Events shorter th
 
     entry_kph / exit_kph = speed at start / at release
     peak_bar             = max pressure
-    avg_decel_g          = mean of -lon_g over active samples (0 if lon_g unknown)
+    avg_decel_g          = mean of -lon_g over the active samples where lon_g is
+                           known (0 if it never was)
     trail_pct            = % of active samples with |lat_g| > cfg.trail_lat_g
     smoothness           = clamp(100 - 0.4 * RMS(dP/dt), 0, 100)
                            dP/dt in bar/s from samples >= 40 ms apart (so a 50 Hz
@@ -61,6 +62,7 @@ class _Event:
         "entry_kph",
         "peak",
         "decel_sum",
+        "decel_n",
         "n",
         "trail_n",
         "dp2_sum",
@@ -74,6 +76,7 @@ class _Event:
         self.entry_kph = speed_kph if speed_kph is not None else 0.0
         self.peak = p
         self.decel_sum = 0.0
+        self.decel_n = 0  # active samples with a known lon_g
         self.n = 0
         self.trail_n = 0
         self.dp2_sum = 0.0
@@ -163,6 +166,7 @@ class BrakeAnalyzer:
                 ev.peak = p
             if lon_g is not None:
                 ev.decel_sum += -lon_g
+                ev.decel_n += 1
             if lat_g is not None and abs(lat_g) > self.cfg.trail_lat_g:
                 ev.trail_n += 1
             if t - ev.last_pt >= DPDT_MIN_DT:
@@ -192,7 +196,7 @@ class BrakeAnalyzer:
             peak_bar=round(ev.peak, 2),
             entry_kph=round(ev.entry_kph, 1),
             exit_kph=round(exit_kph, 1),
-            avg_decel_g=round(ev.decel_sum / ev.n, 3),
+            avg_decel_g=round(ev.decel_sum / ev.decel_n, 3) if ev.decel_n else 0.0,
             trail_pct=round(100.0 * ev.trail_n / ev.n, 1),
             smoothness=round(clamp(100.0 - 0.4 * rms_dpdt, 0.0, 100.0), 1),
         )

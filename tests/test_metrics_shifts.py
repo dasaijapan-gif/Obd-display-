@@ -364,3 +364,64 @@ def test_live_target_and_shift_light(vehicle):
     rig4 = Rig(vehicle)
     rig4.cruise(2, 7100 / vehicle.rpm_per_kph(2), 0.2)
     assert rig4.an.shift_light
+
+
+# --------------------------------------------------------------------------------------
+# reviewer: adversarial cases
+# --------------------------------------------------------------------------------------
+def test_over_blip_left_to_fall_is_scored_where_the_clutch_bites(vehicle):
+    """The classic technique: blip 15 % over, shut the throttle and let the free engine
+    decay (~55 %/s of rpm, as in the sim) to +5 %, *then* release the clutch, which
+    drags the last 5 % in.  The decay happened with the pedal down (clutch open), so it
+    must not be walked back as if it were clutch drag: the error is the +5 % presented
+    at the bite, not the +15 % peak of the blip (which would score ~0)."""
+    rig = Rig(vehicle)
+    kph = 100.0
+    rig.cruise(4, kph, 1.0, brake=True)
+    target = kph * rig.rpk(3)
+    rpm = kph * rig.rpk(4)
+    while rpm < 1.15 * target:  # clutch in, blip
+        rpm = min(1.15 * target, rpm + 5000.0 * DT)
+        rig.tick(rpm, kph, thr=60, brake=True, clutch=True)
+    while rpm > 1.05 * target:  # throttle shut: the free engine decays
+        rpm *= 1.0 - 0.55 * DT
+        rig.tick(rpm, kph, thr=0, brake=True, clutch=True)
+    presented = rpm
+    for k in range(4):  # pedal up: the clutch drags the engine onto the target
+        rig.tick(presented + (target - presented) * (k + 1) / 4, kph, brake=True, clutch=False)
+    rig.tick(target, kph, brake=True, clutch=False, n=80)
+    [r] = scored(rig)
+    truth = (presented / target - 1.0) * 100.0
+    assert r.error_pct == pytest.approx(truth, abs=0.6)
+    assert r.blip and r.heel_toe
+    assert r.score > 60  # ~77 match + timing; the +15 % peak would have scored ~0
+
+
+def test_clutch_dump_is_still_walked_back_through_the_switch_transition(vehicle):
+    """A drag faster than any free-revving engine (here ~250 %/s) is the clutch even
+    where the switch still reads pressed (switches rarely sit exactly at the bite)."""
+    rig = Rig(vehicle)
+    kph = 100.0
+    rig.cruise(4, kph, 1.0, brake=True)
+    target = kph * rig.rpk(3)
+    rig.tick(target * 1.10, kph, thr=40, brake=True, clutch=True, n=20)
+    rig.tick(target * 1.05, kph, thr=10, brake=True, clutch=True)  # biting, switch still on
+    rig.tick(target * 1.00, kph, thr=10, brake=True, clutch=False, n=80)
+    [r] = scored(rig)
+    assert r.error_pct == pytest.approx(10.0, abs=0.5)
+
+
+def test_signal_dropout_while_disengaged_is_not_a_shift(vehicle):
+    """ECU silent while the driver changes 4 -> 3: the engagement was never seen, so the
+    first rpm after the dropout (already coupled, error ~0) must not score a phantom
+    near-perfect downshift.  The next real shift is scored normally."""
+    rig = Rig(vehicle)
+    rig.cruise(4, 100.0, 1.0)
+    rig.tick(None, None, thr=None, n=50)  # rpm / speed missing (stale) for 1 s
+    rig.cruise(3, 95.0, 2.0)
+    assert rig.results == []
+    assert rig.an.session.count == 0 and rig.an.last is None
+    assert rig.an.state == "idle"
+    rig.downshift(3, 2, 60.0)
+    [r] = scored(rig)
+    assert (r.from_gear, r.to_gear) == (3, 2) and r.grade == "S"

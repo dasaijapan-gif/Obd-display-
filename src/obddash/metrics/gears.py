@@ -8,6 +8,8 @@ Two sources, best first:
    the checks below (clutch switch, speed, rpm, and the ratio of that gear when it
    can be computed), because the rev-match analyzer needs the moment the clutch
    really bites, not the moment the lever reaches the gate.  Reverse is ``-1``.
+   Values outside ``-1 .. gear_count`` (the "invalid" / between-gates codes some
+   cars broadcast while the lever moves) are ignored: that tick uses the ratio.
 2. ``"ratio"`` - the observed ``rpm / speed_kph`` against
    ``VehicleConfig.rpm_per_kph(g)`` for every forward gear::
 
@@ -154,6 +156,12 @@ class GearEstimator:
         err: float | None = None
         lever: int | None = None
 
+        if gear_signal is not None and not -1 <= round(gear_signal) <= len(
+            self.vehicle.gear_ratios
+        ):
+            # an "invalid" / between-gates code (many cars send 7 or 15 while the lever moves):
+            # not a gear - fall back to the ratio method rather than "lock" into it
+            gear_signal = None
         if gear_signal is not None:
             source = "can"
             lever = int(round(gear_signal))
