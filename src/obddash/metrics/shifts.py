@@ -44,10 +44,16 @@ Engagement (G' locked)
        pedal) and the held rpm *is* what was presented: use the sample of the
        tick that confirmed the lock.
     2. Walk back (at most 0.4 s, never before disengagement) while the error was
-       converging on zero faster than 40 %/s - quicker than a free-revving engine
-       decays, so it is the clutch pulling - and, for an rpm *rising* toward the
-       target, only while the throttle was below blip level (a rising engine with
-       the throttle shut can only be the clutch; with it open it is the blip)::
+       converging on zero faster than 40 %/s - the clutch pulling - and, for an rpm
+       *rising* toward the target, only while the throttle was below blip level (a
+       rising engine with the throttle shut can only be the clutch; with it open it
+       is the blip).  When a clutch switch is in use, the walk-back stops at the
+       newest sample with the pedal still down: before that the clutch was open, so
+       any rpm change was the engine on its own.  This matters because a closed-
+       throttle engine in neutral decays at roughly 40-70 %/s (the sim: ~55 %/s),
+       which the rate test alone cannot tell from clutch drag.  The common
+       technique - over-blip, then let the revs fall to the target before releasing
+       the clutch - would otherwise be scored at the peak of the blip::
 
         target_rpm = speed_kph(ref) * rpm_per_kph(G')
         actual_rpm = rpm(ref)
@@ -134,8 +140,9 @@ JOLT_GAIN = 40.0
 JOLT_MAX_PENALTY = 15.0
 NO_BLIP_PENALTY = 15.0
 
-# ring entry value layout: (rpm, throttle, brake_value, speed_kph, lon_g, brake_active, rpm_fresh)
-_RPM, _THR, _BRK, _SPD, _LON, _BACT, _FRESH = range(7)
+# ring entry value layout:
+# (rpm, throttle, brake_value, speed_kph, lon_g, brake_active, rpm_fresh, clutch_pressed)
+_RPM, _THR, _BRK, _SPD, _LON, _BACT, _FRESH, _CLU = range(8)
 
 
 def grade_for(score: float) -> str:
@@ -278,7 +285,16 @@ class ShiftAnalyzer:
         slower signal is merely being re-read); ``brake_bar``: pressure or estimate
         for the brake trace.  Returns a ShiftResult once per completed shift."""
         brk = brake_bar if brake_bar is not None else (1.0 if brake_active else 0.0)
-        entry = (rpm, throttle_pct, brk, speed_kph, lon_g, bool(brake_active), rpm_fresh)
+        entry = (
+            rpm,
+            throttle_pct,
+            brk,
+            speed_kph,
+            lon_g,
+            bool(brake_active),
+            rpm_fresh,
+            clutch_switch is True,
+        )
         self._ring.append(t, entry)
         result: ShiftResult | None = None
         if self._pending is not None and t >= self._pending.finalize_at:
@@ -437,7 +453,11 @@ class ShiftAnalyzer:
                 return ticks[-1]
             best, e_best = prev, e_prev
             k -= 1
-        # step 2: walk back through the clutch drag
+        # step 2: walk back through the clutch drag - but never past a sample with the
+        # clutch pedal down: the clutch was open there, so earlier rpm changes were the
+        # engine itself (e.g. a closed-throttle decay after an over-blip), not drag
+        if best[1][_CLU]:
+            return best
         t_limit = best[0] - WALKBACK_MAX_S
         for cand in reversed(pts[:k]):
             if cand[0] < t_limit:
@@ -456,6 +476,8 @@ class ShiftAnalyzer:
             if e < 0 and thr is not None and thr >= blip_min:
                 break  # rpm rising on the throttle: that is the blip
             best, e_best = cand, e
+            if cand[1][_CLU]:
+                break  # the last pedal-down sample: as far back as the drag can go
         return best
 
     def _jolt(self, p: _Pending) -> float | None:
