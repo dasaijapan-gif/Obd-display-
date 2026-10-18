@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>LeanBuddy Simulator</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@500;700&family=Atkinson+Hyperlegible:wght@400;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a workbench. The toy sits on the left, leaning with the bike while its face
+   stays level; controls and the telemetry trace sit on the right. */
+:root {
+  --bg: #eceef1;          /* garage-floor concrete */
+  --panel: #f8f9fa;
+  --ink: #16191f;
+  --muted: #5b6270;
+  --line: #cfd4dc;
+  --accent: #e2551b;      /* knee-slider orange */
+  --truth: #16191f;
+  --estimate: #e2551b;
+  --naive: #8a93a3;
+  --bezel: #23262d;
+  --bezel-hi: #3a3f49;
+  --horizon: #b8c0cc;
+  --display: "Saira Condensed", "Arial Narrow", system-ui, sans-serif;
+  --body: "Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111318; --panel: #181b22; --ink: #e8ebf0; --muted: #98a0ae; --line: #2a2f39;
+    --accent: #ff7a3d; --truth: #e8ebf0; --estimate: #ff7a3d; --naive: #6c7586;
+    --bezel: #2b2f38; --bezel-hi: #454b57; --horizon: #3a414d; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111318; --panel: #181b22; --ink: #e8ebf0; --muted: #98a0ae; --line: #2a2f39;
+  --accent: #ff7a3d; --truth: #e8ebf0; --estimate: #ff7a3d; --naive: #6c7586;
+  --bezel: #2b2f38; --bezel-hi: #454b57; --horizon: #3a414d; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+.stack { display: grid; gap: 12px; min-width: 0; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.5;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 20px 40px;
+}
+.wrap { max-width: 1120px; margin: 0 auto; display: grid; gap: 20px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; }
+h1 { font-family: var(--display); font-weight: 700; font-size: 2.1rem; letter-spacing: .01em; margin: 0; line-height: 1; text-wrap: balance; }
+header p { margin: 0; color: var(--muted); max-width: 62ch; }
+.main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 20px; align-items: start; }
+@media (max-width: 860px) { .main { grid-template-columns: minmax(0, 1fr); } }
+
+/* the toy */
+.stage { position: relative; display: grid; justify-items: center; padding: 24px 0 18px; min-width: 0; overflow: hidden; }
+.device-wrap { position: relative; width: min(68vw, 360px); max-width: 100%; aspect-ratio: 1; margin-bottom: 26px; }
+.horizon { position: absolute; left: -200px; right: -200px; top: 50%; height: 2px; background: var(--horizon); }
+.horizon span { position: absolute; right: 200px; top: 6px; font: 500 11px var(--mono); color: var(--muted); letter-spacing: .08em; text-transform: uppercase; }
+.device { position: absolute; inset: 0; will-change: transform; }
+.device .bezel { position: absolute; inset: 0; border-radius: 50%;
+  background: radial-gradient(circle at 35% 25%, var(--bezel-hi), var(--bezel) 60%);
+  box-shadow: 0 18px 30px -18px rgba(0,0,0,.6), inset 0 0 0 2px rgba(255,255,255,.04); }
+.device canvas { position: absolute; inset: 7%; width: 86%; height: 86%; border-radius: 50%; background: #000; cursor: pointer; }
+.device .mount { position: absolute; left: 50%; bottom: -26px; width: 22%; height: 30px; transform: translateX(-50%);
+  background: var(--bezel); border-radius: 0 0 8px 8px; }
+.stage-caption { margin: 18px 0 0; color: var(--muted); font-size: .86rem; text-align: center; max-width: 42ch; }
+.readouts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; width: 100%; margin-top: 18px; }
+.readouts div { background: var(--panel); padding: 10px 12px; min-width: 0; }
+.readouts dt { font: 500 10.5px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.readouts dd { margin: 2px 0 0; font: 700 1.55rem/1.1 var(--display); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.readouts dd small { font: 500 .8rem var(--mono); color: var(--muted); margin-left: 2px; }
+@media (max-width: 460px) { .readouts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* controls */
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: grid; gap: 14px; min-width: 0; }
+.panel h2 { font: 700 1.05rem var(--display); letter-spacing: .06em; text-transform: uppercase; margin: 0; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 3px; gap: 3px; flex-wrap: wrap; }
+.seg button { border: 0; background: transparent; color: var(--ink); font: 700 .9rem var(--body); padding: 7px 14px; border-radius: 999px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--panel); }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.btn { border: 1px solid var(--line); background: var(--bg); color: var(--ink); font: 700 .88rem var(--body); padding: 8px 12px; border-radius: 8px; cursor: pointer; touch-action: manipulation; user-select: none; }
+.btn:active, .btn.held { background: var(--accent); border-color: var(--accent); color: #fff; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.progress { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.progress i { display: block; height: 100%; width: 0; background: var(--accent); }
+.meta { display: flex; justify-content: space-between; gap: 10px; font: 400 .8rem var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+label.slider { display: grid; grid-template-columns: 76px minmax(0, 1fr) 54px; align-items: center; gap: 10px; font-size: .9rem; }
+label.slider output { font: 500 .85rem var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+input[type=range] { width: 100%; accent-color: var(--accent); }
+.keys { font: 400 .8rem var(--mono); color: var(--muted); }
+kbd { font: 500 .78rem var(--mono); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; background: var(--bg); color: var(--ink); }
+.note { font-size: .85rem; color: var(--muted); margin: 0; }
+.event { display: flex; align-items: center; gap: 10px; min-height: 30px; }
+.chip { font: 700 .82rem var(--mono); letter-spacing: .04em; text-transform: uppercase; padding: 4px 10px; border-radius: 999px; background: var(--accent); color: #fff; }
+.chip.quiet { background: var(--line); color: var(--muted); }
+.log { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font: 400 .82rem var(--mono); color: var(--muted); max-height: 9.5em; overflow: auto; }
+.log b { color: var(--ink); font-weight: 500; }
+
+/* trace */
+.trace { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; display: grid; gap: 8px; min-width: 0; }
+.trace canvas { width: 100%; height: 190px; display: block; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: .85rem; color: var(--muted); }
+.legend i { display: inline-block; width: 18px; height: 3px; vertical-align: middle; margin-right: 6px; border-radius: 2px; }
+.trace h2 { font: 700 1.05rem var(--display); letter-spacing: .06em; text-transform: uppercase; margin: 0; }
+.err { color: var(--accent); font-weight: 700; }
+@media (prefers-reduced-motion: reduce) { .device { transition: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>LeanBuddy</h1>
+    <p>A little face that rides on your motorbike. It reads how far you lean and the G-forces, and reacts. This page runs the real device code, compiled to WebAssembly.</p>
+  </header>
+
+  <div class="main">
+    <section class="stage" aria-label="The toy">
+      <div class="device-wrap">
+        <div class="horizon"><span>horizon</span></div>
+        <div class="device" id="device">
+          <div class="bezel"></div>
+          <canvas id="screen" width="240" height="240" aria-label="LeanBuddy screen: tap to change page"></canvas>
+          <div class="mount"></div>
+        </div>
+      </div>
+      <p class="stage-caption">The toy leans with the bike; its face stays level with the world. Tap the screen to switch between the face, the lean gauge and ride stats.</p>
+      <dl class="readouts">
+        <div><dt>Speed</dt><dd id="r-speed">0<small>km/h</small></dd></div>
+        <div><dt>Lean</dt><dd id="r-lean">0°</dd></div>
+        <div><dt>Braking / Accel</dt><dd id="r-lon">0.00<small>g</small></dd></div>
+        <div><dt>Cornering</dt><dd id="r-lat">0.00<small>g</small></dd></div>
+      </dl>
+    </section>
+
+    <div class="stack" style="gap:16px">
+      <section class="panel" aria-label="Ride">
+        <div class="row" style="justify-content:space-between">
+          <h2>Ride</h2>
+          <div class="seg" role="group" aria-label="Mode">
+            <button id="m-canyon" aria-pressed="true">Canyon road</button>
+            <button id="m-manual" aria-pressed="false">Ride it yourself</button>
+            <button id="m-phone" aria-pressed="false" hidden>Phone sensors</button>
+          </div>
+        </div>
+
+        <div id="canyon-ui" class="stack">
+          <div class="progress"><i id="prog"></i></div>
+          <div class="meta"><span id="t-now">0.0 s</span><span id="t-phase">Parked, calibrating</span><span id="t-len">112 s</span></div>
+          <div class="row">
+            <button class="btn" id="b-pause">Pause</button>
+            <button class="btn" id="b-speed">Speed 1×</button>
+            <button class="btn" id="b-restart">Restart</button>
+          </div>
+        </div>
+
+        <div id="manual-ui" class="stack" hidden>
+          <label class="slider">Lean <input id="s-lean" type="range" min="-55" max="55" value="0" step="1"><output id="o-lean">0°</output></label>
+          <label class="slider">Throttle <input id="s-thr" type="range" min="0" max="100" value="0" step="1"><output id="o-thr">0%</output></label>
+          <div class="row">
+            <button class="btn" id="b-brake">Brake</button>
+            <button class="btn" id="b-wheelie">Wheelie</button>
+            <button class="btn" id="b-bump">Pothole</button>
+            <button class="btn" id="b-jump">Crest</button>
+          </div>
+          <p class="keys"><kbd>←</kbd> <kbd>→</kbd> lean · <kbd>↑</kbd> throttle · <kbd>↓</kbd> brake · <kbd>W</kbd> wheelie · <kbd>B</kbd> pothole · <kbd>J</kbd> crest</p>
+          <p class="note">You need some speed to lean: open the throttle first.</p>
+        </div>
+
+        <div id="phone-ui" hidden>
+          <p class="note" id="phone-msg">Hold the phone upright with the screen facing you, like the toy on the handlebars, then tilt it.</p>
+        </div>
+
+        <div class="event"><span class="chip quiet" id="ev">riding</span><span class="note" id="ev-desc"></span></div>
+        <ul class="log" id="log" aria-label="Recent reactions"></ul>
+        <div class="row"><button class="btn" id="b-cal">Recalibrate</button><button class="btn" id="b-page">Next page</button></div>
+      </section>
+
+      <section class="trace" aria-label="Lean trace">
+        <h2>Lean, last 20 seconds</h2>
+        <canvas id="chart" height="190"></canvas>
+        <div class="legend">
+          <span><i style="background:var(--truth)"></i>True lean</span>
+          <span><i style="background:var(--estimate)"></i>LeanBuddy's estimate</span>
+          <span><i style="background:var(--naive)"></i>Accelerometer alone</span>
+          <span id="err-out"></span>
+        </div>
+        <p class="note">In a steady corner the accelerometer reads "upright": gravity and the cornering force add up to a push straight down through the bike. So the lean comes from the gyro, kept honest by the turn rate.</p>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const EVENTS = ["none","corner","wheelie_done","record","wake","launch","bump","hard_brake","stoppie","wheelie","landing","airtime","tipover","calibrated","calibrating"];
+  const LABEL = {
+    corner: ["corner report", "Peak lean of the corner, shown once you're upright"],
+    wheelie_done: ["wheelie time", "How long the front wheel was up"],
+    record: ["new best!", "Deepest lean ever on that side"],
+    wake: ["good morning", "Woke up when the engine started"],
+    launch: ["launch", "Hard acceleration"],
+    bump: ["bump", "Pothole or ridge"],
+    hard_brake: ["hard braking", "Over 0.45 g of deceleration"],
+    stoppie: ["stoppie", "Rear wheel up under braking"],
+    wheelie: ["wheelie", "Front wheel up"],
+    landing: ["landing", "Back on the ground"],
+    airtime: ["airtime", "Both wheels off the ground"],
+    tipover: ["uh oh", "Lying on its side"],
+    calibrated: ["ready", "Knows which way is up"],
+    calibrating: ["calibrating", "Hold the bike upright and still"],
+  };
+  const ACT = ["asleep", "stopped", "riding"];
+  // one label per segment of the canyon script in core/ridesim.c
+  const CANYON = [
+    "Parked, calibrating", "Engine on", "Pulling away", "Cruising", "Braking", "Left, 26°", "Straight",
+    "Right, 34°", "Pothole", "Straight", "Big stop", "Knee down, left", "Straight", "Knee down, right",
+    "Straight", "Slowing", "Rolling", "Wheelie", "Straight", "Crest", "Sweeper left", "Sweeper right",
+    "Straight", "Stopping at the lights", "Waiting", "Off again", "Stopping", "Parked: falls asleep",
+  ];
+
+  const $ = (id) => document.getElementById(id);
+  const screen = $("screen"), sctx = screen.getContext("2d");
+  const chart = $("chart"), cctx = chart.getContext("2d");
+  let ex = null, mode = "canyon", paused = false, speed = 1, last = 0;
+  const hist = [];           // [t, true, est, naive]
+  let lastEv = 0, simClock = 0;
+  const keys = {};
+  let brakeHeld = false, wheelieHeld = false;
+
+  async function loadWasm() {
+    let bytes;
+    if (window.LB_WASM_B64) {
+      const s = atob(window.LB_WASM_B64);
+      bytes = new Uint8Array(s.length);
+      for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i);
+    } else {
+      bytes = await (await fetch("leanbuddy.wasm")).arrayBuffer();
+    }
+    const { instance } = await WebAssembly.instantiate(bytes, {});
+    return instance.exports;
+  }
+
+  function start(m) {
+    mode = m;
+    for (const [id, name] of [["m-canyon", "canyon"], ["m-manual", "manual"], ["m-phone", "phone"]])
+      $(id).setAttribute("aria-pressed", String(name === m));
+    $("canyon-ui").hidden = m !== "canyon";
+    $("manual-ui").hidden = m !== "manual";
+    $("phone-ui").hidden = m !== "phone";
+    ex.sim_init(m === "canyon" ? 1 : 0, 7);
+    if (m === "manual") ex.sim_engine(1);
+    hist.length = 0; simClock = 0; lastEv = 0;
+    $("log").innerHTML = "";
+    if (m === "phone") startPhone();
+  }
+
+  // ---- manual controls ----
+  function manualControls(dt) {
+    const ls = $("s-lean"), ts = $("s-thr");
+    if (keys.ArrowLeft) ls.value = Math.max(-55, +ls.value - 60 * dt);
+    if (keys.ArrowRight) ls.value = Math.min(55, +ls.value + 60 * dt);
+    if (!keys.ArrowLeft && !keys.ArrowRight && document.activeElement !== ls)
+      ls.value = +ls.value * Math.pow(0.25, dt);   // the bike stands itself up when you let go
+    if (keys.ArrowUp) ts.value = Math.min(100, +ts.value + 120 * dt);
+    else if (document.activeElement !== ts) ts.value = Math.max(0, +ts.value - 30 * dt);
+    const brake = brakeHeld || keys.ArrowDown ? 0.8 : 0;
+    const wheelie = wheelieHeld || keys.w || keys.W ? 1 : 0;
+    $("o-lean").textContent = Math.round(ls.value) + "°";
+    $("o-thr").textContent = Math.round(ts.value) + "%";
+    ex.sim_controls(+ls.value, wheelie ? 0.9 : ts.value / 100, brake, wheelie);
+  }
+
+  function hold(btn, set) {
+    const on = (e) => { e.preventDefault(); set(true); btn.classList.add("held"); };
+    const off = () => { set(false); btn.classList.remove("held"); };
+    btn.addEventListener("pointerdown", on);
+    for (const ev of ["pointerup", "pointerleave", "pointercancel"]) btn.addEventListener(ev, off);
+  }
+
+  // ---- phone sensors (works when this page is served directly, not inside a sandboxed frame) ----
+  let phoneOn = false, flip = 1, ySum = 0, yN = 0, gotMotion = false;
+  async function startPhone() {
+    try {
+      if (typeof DeviceMotionEvent !== "undefined" && DeviceMotionEvent.requestPermission) {
+        const r = await DeviceMotionEvent.requestPermission();
+        if (r !== "granted") throw new Error("denied");
+      }
+    } catch (e) {
+      $("phone-msg").textContent = "Motion access was refused. Allow motion sensors for this site and try again.";
+      return;
+    }
+    if (!phoneOn) window.addEventListener("devicemotion", onMotion);
+    phoneOn = true;
+    setTimeout(() => {
+      if (!gotMotion) $("phone-msg").textContent = "No motion data is reaching this page. Open the simulator straight from a web server on your phone (see leanbuddy/README.md).";
+    }, 2500);
+  }
+  function onMotion(e) {
+    if (mode !== "phone") return;
+    const a = e.accelerationIncludingGravity, r = e.rotationRate;
+    if (!a || a.x == null || !r) return;
+    gotMotion = true;
+    // Some browsers report the opposite sign: held upright, "up" (y) must read +1 g.
+    if (yN < 60) { ySum += a.y; yN++; flip = ySum < 0 ? -1 : 1; }
+    const g = 9.80665 * flip;
+    ex.sim_feed_imu(e.timeStamp / 1000, a.x / g, a.y / g, a.z / g, r.beta || 0, r.gamma || 0, r.alpha || 0);
+  }
+
+  // ---- drawing ----
+  function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+  function drawScreen() {
+    const ptr = ex.sim_render();
+    const img = new ImageData(new Uint8ClampedArray(ex.memory.buffer, ptr, 240 * 240 * 4).slice(), 240, 240);
+    sctx.putImageData(img, 0, 0);
+    screen.style.filter = `brightness(${Math.max(0.2, ex.sim_brightness()).toFixed(2)})`;
+  }
+
+  function drawChart() {
+    const dpr = window.devicePixelRatio || 1;
+    const w = chart.clientWidth, h = chart.clientHeight;
+    if (chart.width !== Math.round(w * dpr)) { chart.width = Math.round(w * dpr); chart.height = Math.round(h * dpr); }
+    cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    cctx.clearRect(0, 0, w, h);
+    const padL = 34, padR = 8, padT = 8, padB = 18, span = 20, maxDeg = 60;
+    const now = simClock;
+    const x = (t) => padL + (w - padL - padR) * (1 - (now - t) / span);
+    const y = (d) => padT + (h - padT - padB) * (0.5 - d / (2 * maxDeg));
+    cctx.font = "11px " + css("--mono");
+    cctx.fillStyle = css("--muted");
+    cctx.strokeStyle = css("--line");
+    cctx.lineWidth = 1;
+    for (const d of [-60, -45, -30, -15, 0, 15, 30, 45, 60]) {
+      cctx.globalAlpha = d === 0 ? 1 : 0.6;
+      cctx.beginPath(); cctx.moveTo(padL, y(d)); cctx.lineTo(w - padR, y(d)); cctx.stroke();
+      if (d % 30 === 0) { cctx.textAlign = "right"; cctx.fillText((d > 0 ? "R" : d < 0 ? "L" : "") + Math.abs(d) + "°", padL - 6, y(d) + 4); }
+    }
+    cctx.globalAlpha = 1;
+    cctx.textAlign = "left";
+    cctx.fillText("−20 s", padL, h - 4);
+    cctx.textAlign = "right";
+    cctx.fillText("now", w - padR, h - 4);
+    const series = [[3, css("--naive"), 1.5, [4, 3]], [1, css("--truth"), 2, []], [2, css("--estimate"), 2, []]];
+    if (mode === "phone") series.splice(0, 2);
+    for (const [k, color, lw, dash] of series) {
+      cctx.strokeStyle = color; cctx.lineWidth = lw; cctx.setLineDash(dash);
+      cctx.beginPath();
+      let first = true;
+      for (const p of hist) {
+        if (now - p[0] > span) continue;
+        const px = x(p[0]), py = y(Math.max(-maxDeg, Math.min(maxDeg, p[k])));
+        if (first) { cctx.moveTo(px, py); first = false; } else cctx.lineTo(px, py);
+      }
+      cctx.stroke();
+    }
+    cctx.setLineDash([]);
+  }
+
+  function phaseName() { return CANYON[ex.sim_segment()] || ""; }
+
+  function readouts() {
+    const lean = ex.sim_lean();
+    $("r-speed").innerHTML = (mode === "phone" ? "—" : Math.round(ex.sim_speed_kmh())) + "<small>km/h</small>";
+    $("r-lean").textContent = (lean < -0.5 ? "L " : lean > 0.5 ? "R " : "") + Math.abs(lean).toFixed(0) + "°";
+    const lon = ex.sim_lon_g();
+    $("r-lon").innerHTML = Math.abs(lon).toFixed(2) + `<small>g ${lon < -0.05 ? "brake" : lon > 0.05 ? "accel" : ""}</small>`;
+    $("r-lat").innerHTML = Math.abs(ex.sim_lat_g()).toFixed(2) + "<small>g</small>";
+    const ev = EVENTS[ex.sim_event()] || "none";
+    const chip = $("ev");
+    if (ev === "none") { chip.textContent = ACT[ex.sim_activity()]; chip.classList.add("quiet"); $("ev-desc").textContent = ""; }
+    else { chip.textContent = LABEL[ev][0]; chip.classList.remove("quiet"); $("ev-desc").textContent = LABEL[ev][1]; }
+    const evi = ex.sim_event();
+    if (evi !== lastEv && evi !== 0) {
+      const li = document.createElement("li");
+      li.innerHTML = `${simClock.toFixed(1).padStart(6, " ")} s  <b>${LABEL[ev][0]}</b>`;
+      $("log").prepend(li);
+      while ($("log").children.length > 30) $("log").lastChild.remove();
+    }
+    lastEv = evi;
+    if (mode === "canyon") {
+      const len = ex.sim_script_length(), t = ex.sim_time() % len;
+      $("prog").style.width = (100 * t / len).toFixed(1) + "%";
+      $("t-now").textContent = t.toFixed(1) + " s";
+      $("t-len").textContent = Math.round(len) + " s";
+      $("t-phase").textContent = phaseName();
+    }
+    if (mode !== "phone" && hist.length > 20) {
+      let se = 0, n = 0;
+      for (const p of hist) if (Math.abs(p[1]) > 0.5 || Math.abs(p[2]) > 0.5) { se += (p[2] - p[1]) ** 2; n++; }
+      $("err-out").innerHTML = n ? `Estimate error <span class="err">${Math.sqrt(se / n).toFixed(1)}° RMS</span>` : "";
+    } else $("err-out").textContent = "";
+  }
+
+  function frame(ts) {
+    const dt = last ? Math.min(0.1, (ts - last) / 1000) : 1 / 60;
+    last = ts;
+    if (!paused) {
+      if (mode === "manual") manualControls(dt);
+      const sdt = dt * speed;
+      // step in chunks the core accepts
+      for (let left = sdt; left > 1e-6; left -= 0.1) ex.sim_step(Math.min(0.1, left));
+      simClock += sdt;
+      hist.push([simClock, ex.sim_true_lean(), ex.sim_lean(), ex.sim_accel_only_lean()]);
+      while (hist.length && simClock - hist[0][0] > 21) hist.shift();
+    }
+    // the toy leans with the bike
+    const tilt = mode === "phone" ? 0 : ex.sim_true_lean();
+    $("device").style.transform = `rotate(${tilt.toFixed(2)}deg)`;
+    drawScreen();
+    drawChart();
+    readouts();
+    requestAnimationFrame(frame);
+  }
+
+  async function boot() {
+    try { ex = await loadWasm(); }
+    catch (e) {
+      $("t-phase").textContent = "Could not load leanbuddy.wasm. Serve this folder (python3 -m http.server) or run make wasm.";
+      return;
+    }
+    if (typeof DeviceMotionEvent !== "undefined" && window.self === window.top) $("m-phone").hidden = false;
+    $("m-canyon").onclick = () => start("canyon");
+    $("m-manual").onclick = () => start("manual");
+    $("m-phone").onclick = () => start("phone");
+    $("b-pause").onclick = () => { paused = !paused; $("b-pause").textContent = paused ? "Play" : "Pause"; };
+    $("b-speed").onclick = () => { speed = speed === 1 ? 2 : speed === 2 ? 4 : 1; $("b-speed").textContent = `Speed ${speed}×`; };
+    $("b-restart").onclick = () => start("canyon");
+    $("b-cal").onclick = () => ex.sim_calibrate();
+    $("b-page").onclick = () => ex.sim_tap();
+    screen.addEventListener("click", () => ex.sim_tap());
+    $("b-bump").onclick = () => ex.sim_bump();
+    $("b-jump").onclick = () => ex.sim_jump();
+    hold($("b-brake"), (v) => (brakeHeld = v));
+    hold($("b-wheelie"), (v) => (wheelieHeld = v));
+    window.addEventListener("keydown", (e) => {
+      if (mode !== "manual") return;
+      if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", " "].includes(e.key)) e.preventDefault();
+      keys[e.key] = true;
+      if (e.key === "b" || e.key === "B") ex.sim_bump();
+      if (e.key === "j" || e.key === "J") ex.sim_jump();
+    });
+    window.addEventListener("keyup", (e) => { keys[e.key] = false; });
+    start("canyon");
+    requestAnimationFrame(frame);
+  }
+  boot();
+})();
+</script>
+</body>
+</html>

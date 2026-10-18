@@ -11,6 +11,9 @@ never writes to the car.
 
 ![DRIVE page at 1280×400](docs/screenshots/drive-1280x400.png)
 
+> **Also in this repo: [LeanBuddy](leanbuddy/)**, a toy for motorbikes: a round-screen
+> character that reads your lean angle and G-forces and reacts with animations.
+
 > **Status: early (v0.1).** The whole pipeline, including the real OBD-II and CAN
 > signal decoding, is exercised end to end against the built-in simulator on a virtual
 > CAN bus. On a real car, expect to spend an evening on the vehicle file: gear ratios,

@@ -1,0 +1,13 @@
+{
+  "name": "leanbuddy-core",
+  "version": "0.1.0",
+  "description": "LeanBuddy core: lean estimation, ride brain, face animation and software renderer (portable C, no dependencies)",
+  "frameworks": "*",
+  "platforms": "*",
+  "build": {
+    "srcFilter": ["+<*.c>"],
+    "includeDir": ".",
+    "srcDir": ".",
+    "flags": ["-O2", "-std=gnu11"]
+  }
+}
