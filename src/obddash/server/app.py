@@ -42,7 +42,7 @@ from typing import Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from starlette.staticfiles import StaticFiles
 from starlette.types import Scope
 
@@ -56,8 +56,10 @@ _JSON_SEPARATORS = (",", ":")
 
 
 class CommandBody(BaseModel):
+    """Same payload as a WebSocket command; ``"args": null`` is accepted there too."""
+
     cmd: str
-    args: dict[str, Any] = Field(default_factory=dict)
+    args: dict[str, Any] | None = None
 
 
 class _UiStaticFiles(StaticFiles):
@@ -158,8 +160,10 @@ def create_app(runtime: Any, *, web_dir: Path | str | None = None) -> FastAPI:
             yield
         finally:
             task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-            runtime.stop()
+            try:
+                await asyncio.wait({task})  # not gather: see the note in ws_endpoint
+            finally:
+                runtime.stop()  # even if this await is cancelled: threads, recording
 
     app = FastAPI(
         title="obddash",
@@ -257,10 +261,18 @@ def create_app(runtime: Any, *, web_dir: Path | str | None = None) -> FastAPI:
             if not _is_disconnect(exc):
                 log.warning("websocket handler error: %r", exc)
         finally:
+            # unsubscribe BEFORE any await: a server may cancel this handler on
+            # disconnect / shutdown and anyio-style cancellation hits every following
+            # await, which would leave a ghost client in the hub forever
+            runtime.unsubscribe(queue)
             for t in tasks:
                 t.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-            runtime.unsubscribe(queue)
+            if tasks:
+                # asyncio.wait, not gather: if this handler is itself being cancelled,
+                # gather re-raises a *child's* CancelledError and loses the canceller's
+                # identity (anyio / Starlette then fail to recognise their own scope's
+                # cancellation); wait() lets the original cancellation through untouched
+                await asyncio.wait(tasks)
 
     # -- static files: last, so they never shadow an API route ----------------------
     if web_dir.is_dir():

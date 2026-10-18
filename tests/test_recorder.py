@@ -284,3 +284,52 @@ def test_replayer_empty_recording_does_not_spin(tmp_path):
     assert rp.duration == 0.0
     rp.start()
     assert rp.wait(2.0)
+
+
+def test_replayer_survives_backwards_and_duplicate_timestamps(tmp_path):
+    """Hand-concatenated recordings can step back in time; that must neither hang the
+    replay (negative sleeps) nor stop it early."""
+    path = tmp_path / "rec.jsonl"
+    lines = [
+        '{"meta": {"vehicle": "x"}}',
+        '{"t": 0.0, "v": {"rpm": 1000}}',
+        '{"t": 0.1, "v": {"rpm": 1100}}',
+        '{"t": 0.05, "v": {"rpm": 1200}}',  # backwards
+        '{"t": 0.05, "v": {"rpm": 1300}}',  # duplicate
+        "not json at all",
+        '{"t": 0.15, "v": {"rpm": 1400, "speed_kph": 12}}',
+    ]
+    path.write_text("\n".join(lines) + "\n")
+    raw = RawState()
+    rp = Replayer(path, raw, speed=1.0)
+    t0 = time.monotonic()
+    rp.start()
+    assert rp.wait(3.0)
+    assert time.monotonic() - t0 < 1.0  # 0.1 + 0 + 0 + 0.1 s of real spacing
+    assert rp.lines == 5
+    assert raw.get(Sig.RPM) == 1400.0 and raw.get(Sig.SPEED_KPH) == 12.0
+
+
+def test_replayer_speed_can_change_while_playing(tmp_path):
+    path = tmp_path / "rec.jsonl"
+    _ramp_recording(path, seconds=3.0)
+    rp = Replayer(path, RawState(), speed=1.0)
+    t0 = time.monotonic()
+    rp.start()
+    time.sleep(0.1)
+    rp.speed = 100.0
+    assert rp.wait(3.0)
+    assert time.monotonic() - t0 < 1.0  # ~0.1 s at x1 + ~2.9 s of data at x100
+    assert rp.position == pytest.approx(3.0)
+
+
+def test_keepalive_writes_are_bounded(tmp_path):
+    """A value refreshed once after being written gets at most one keepalive line;
+    a constant, silent value is never repeated however long the recording runs."""
+    path = tmp_path / "rec.jsonl"
+    steps = [(0.0, {Sig.COOLANT_C: 92.0, Sig.BARO_KPA: 101.0}), (0.3, {Sig.COOLANT_C: 92.0})]
+    steps += [(round(0.3 + 0.02 * i, 2), {}) for i in range(1, 250)]  # 5 s of silence
+    _record(path, steps, keepalive_s=1.0)
+    data = read_recording(path)
+    assert [t for t, v in data if Sig.COOLANT_C in v] == [0.0, 1.0]
+    assert [t for t, v in data if Sig.BARO_KPA in v] == [0.0]

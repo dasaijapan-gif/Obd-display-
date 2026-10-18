@@ -437,6 +437,9 @@ def cmd_pids(args: argparse.Namespace) -> int:
     _apply_bus_args(cfg, args)
     raw = RawState()
     with _bus_session(cfg, sim=args.sim) as (bus, bus_cfg, desc):
+        if not bus_cfg.obd_enabled:
+            # polling is the point of this command, even for a broadcast-only config
+            bus_cfg = bus_cfg.model_copy(update={"obd_enabled": True})
         reader = CanReader(bus_cfg, cfg.vehicle, raw, bus=bus)
         print(f"polling {desc} for {args.seconds:g} s ...", flush=True)
         reader.start()

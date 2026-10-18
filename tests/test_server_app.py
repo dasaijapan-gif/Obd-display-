@@ -259,6 +259,15 @@ async def test_post_cmd(client, runtime):
     assert (await client.post("/api/cmd", json={"nope": 1})).status_code == 422
 
 
+async def test_post_cmd_accepts_the_ws_payload_with_null_args(client, runtime):
+    """POST /api/cmd takes the same payload as a WS command, including "args": null."""
+    r = await client.post("/api/cmd", json={"cmd": "dyno.cancel", "args": None})
+    assert r.status_code == 200 and r.json() == {"cmd": "dyno.cancel", "ok": True}
+    assert json.loads(handle_ws_command(runtime, '{"cmd": "dyno.cancel", "args": null}'))["ok"]
+    assert runtime.commands == [("dyno.cancel", {}), ("dyno.cancel", {})]
+    assert (await client.post("/api/cmd", json={"cmd": "x", "args": [1]})).status_code == 422
+
+
 async def test_cors_allows_any_origin(client):
     r = await client.options(
         "/api/cmd",
@@ -323,6 +332,71 @@ def test_ws_client_disconnect_is_silent(runtime, web_dir, caplog):
                 time.sleep(0.01)
             assert runtime.subs == set()
     assert [r for r in caplog.records if r.name == "obddash.server.app"] == []
+
+
+def test_ws_binary_frame_command_and_burst_of_commands(runtime, web_dir):
+    """A command sent as a binary frame is still acked; a burst of commands is acked
+    one for one while telemetry keeps streaming."""
+    with TestClient(create_app(runtime, web_dir=web_dir)) as c:
+        with c.websocket_connect("/ws") as ws:
+            ws.receive_json()  # hello
+            ws.send_bytes(b'{"cmd": "session.reset"}')
+            assert _recv_until(ws, "ack") == {"type": "ack", "cmd": "session.reset", "ok": True}
+            for _ in range(20):
+                ws.send_json({"cmd": "dyno.clear"})
+            acks = 0
+            for _ in range(200):
+                if ws.receive_json()["type"] == "ack":
+                    acks += 1
+                    if acks == 20:
+                        break
+            assert acks == 20
+    assert runtime.commands == [("session.reset", {})] + [("dyno.clear", {})] * 20
+
+
+async def test_ws_handler_cancelled_mid_cleanup_still_unsubscribes(app, runtime):
+    """Servers (and Starlette's TestClient, via anyio cancel scopes) may cancel the
+    handler on disconnect / shutdown, and keep cancelling every await after that.
+    The client queue must be unsubscribed anyway, or a ghost client stays in the hub
+    forever (counted in health, keeping telemetry serialisation busy)."""
+    sent: list[dict] = []
+    greeted = asyncio.Event()
+    connected = False
+
+    async def receive():
+        nonlocal connected
+        if not connected:
+            connected = True
+            return {"type": "websocket.connect"}
+        await asyncio.Event().wait()  # the client never says anything else
+
+    async def send(message):
+        sent.append(message)
+        if sum(m["type"] == "websocket.send" for m in sent) >= 2:  # hello + snapshot
+            greeted.set()
+
+    scope = {
+        "type": "websocket",
+        "asgi": {"version": "3.0"},
+        "path": "/ws",
+        "raw_path": b"/ws",
+        "root_path": "",
+        "scheme": "ws",
+        "query_string": b"",
+        "headers": [],
+        "client": ("test", 1),
+        "server": ("dash", 80),
+        "subprotocols": [],
+        "state": {},
+    }
+    handler = asyncio.create_task(app(scope, receive, send))
+    await asyncio.wait_for(greeted.wait(), 2.0)
+    assert len(runtime.subs) == 1
+    handler.cancel()  # first cancel: lands in the pump/listen wait
+    await asyncio.sleep(0)  # handler is now inside its cleanup awaiting the children
+    handler.cancel()  # level-triggered cancellation: the cleanup await is cancelled too
+    await asyncio.gather(handler, return_exceptions=True)
+    assert runtime.subs == set()
 
 
 def test_handle_ws_command_shapes(runtime):

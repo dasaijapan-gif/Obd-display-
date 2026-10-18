@@ -213,8 +213,14 @@ class Runtime:
     # ----------------------------------------------------------------------------------
     def start(self) -> None:
         """Start the data source (and recorder).  Sync; returns quickly.  On failure
-        everything started so far is stopped again and the exception propagates."""
+        everything started so far is stopped again and the exception propagates.
+
+        A Runtime that has been stopped never starts again: threads started after
+        ``stop()`` would have no owner left to stop them (``run()`` returns at once)."""
         if self._started:
+            return
+        if self._stop_requested:
+            log.debug("runtime already stopped; not starting the %s source", self.source)
             return
         self._started = True
         self.started_at = time.monotonic()
@@ -229,6 +235,11 @@ class Runtime:
         except Exception:
             self.stop()
             raise
+        if self._stop_requested:
+            # stop() ran on another thread while we were starting: it may have missed
+            # what was created after it looked, so stop again (every stop is idempotent)
+            self.stop()
+            return
         log.info("runtime started: source=%s vehicle=%s", self.source, self.vehicle.name)
 
     async def run(self) -> None:
@@ -373,9 +384,12 @@ class Runtime:
         if self.source == "replay":
             log.info("recording is off while replaying")
             return
+        vehicle_file = self.cfg.vehicle_file
         meta = {
             "vehicle": self.vehicle.name,
-            "vehicle_file": self.cfg.vehicle_file,
+            # absolute: `obddash replay` reopens it, possibly from another directory
+            # (load_config leaves it relative when the config path was relative)
+            "vehicle_file": str(Path(vehicle_file).resolve()) if vehicle_file else None,
             "source": self.source,
             "tick_hz": self.cfg.metrics.tick_hz,
         }

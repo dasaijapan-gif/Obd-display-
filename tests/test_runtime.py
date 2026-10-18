@@ -444,3 +444,61 @@ def test_failed_start_cleans_up(tmp_path):
     with pytest.raises(FileNotFoundError):
         rt.start()
     rt.stop()
+
+
+def _looping_recording(path):
+    raw = RawState()
+    with Recorder(path) as rec:
+        for i in range(5):
+            raw.set(Sig.RPM, 1000.0 + i)
+            rec.sample(raw, i * 0.1)
+    return path
+
+
+async def test_run_after_stop_starts_no_source_threads(tmp_path):
+    """A stopped Runtime must not start its source again: run() would return at once
+    and nothing would ever stop the threads (a looping replay here)."""
+    path = _looping_recording(tmp_path / "loop.jsonl")
+    rt = Runtime(_cfg(), source="replay", replay_path=path, replay_loop=True, engine=FakeEngine())
+    rt.stop()
+    assert await asyncio.wait_for(rt.run(), 2.0) is None
+    rt.start()
+    assert rt.replayer is None
+    assert "obddash-replay" not in [t.name for t in threading.enumerate()]
+
+
+def test_stop_racing_start_still_stops_everything(tmp_path):
+    """stop() from another thread while start() is half way (here: after the source,
+    before the recorder) must not leave the late-created recorder open."""
+    cfg = _cfg()
+    cfg.recording.enabled = True
+    cfg.recording.dir = str(tmp_path / "rec")
+    rt = Runtime(cfg, source="none", engine=FakeEngine())
+    original = rt._start_recorder
+
+    def start_recorder_after_concurrent_stop():
+        t = threading.Thread(target=rt.stop)
+        t.start()
+        t.join()
+        original()
+
+    rt._start_recorder = start_recorder_after_concurrent_stop
+    rt.start()
+    assert rt.recorder is None  # created after stop() looked, then closed by start()
+    assert len(list((tmp_path / "rec").glob("*.jsonl"))) == 1
+
+
+def test_recording_meta_vehicle_file_is_absolute(tmp_path, monkeypatch, sim_vehicle):
+    """load_config keeps vehicle_file relative when the config path was relative;
+    `obddash replay` may run from another directory, so the header stores it absolute."""
+    (tmp_path / "car.yaml").write_text("name: Car\n")
+    monkeypatch.chdir(tmp_path)
+    cfg = _cfg(vehicle=sim_vehicle)
+    cfg.vehicle_file = "car.yaml"
+    cfg.recording.enabled = True
+    cfg.recording.dir = "rec"
+    rt = Runtime(cfg, source="none", engine=FakeEngine())
+    rt.start()
+    path = rt.recorder.path
+    rt.stop()
+    assert read_meta(path)["vehicle_file"] == str((tmp_path / "car.yaml").resolve())

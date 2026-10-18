@@ -352,3 +352,26 @@ def test_python_dash_m_entry_point():
     )
     assert r.returncode == 0, r.stderr
     assert "rpm/kph" in r.stdout
+
+
+def test_pids_polls_even_when_the_config_turns_obd_off(tmp_path, capsys):
+    """`obddash pids` exists to poll the ECU; a broadcast-only config (obd_enabled:
+    false) must not turn it into a misleading "no OBD-II response"."""
+    path = tmp_path / "app.yaml"
+    path.write_text("bus: {obd_enabled: false}\n")
+    assert cli.main(["-c", str(path), "pids", "--sim", "--seconds", "1.0"]) == 0
+    assert "VIN: SIM0BDDASH0000001" in capsys.readouterr().out
+
+
+def test_module_sources_parse_as_python_3_11():
+    """The Pi runs Python 3.11: no PEP 695 syntax or other 3.12+ grammar."""
+    import ast
+    from pathlib import Path
+
+    import obddash
+
+    pkg = Path(obddash.__file__).parent
+    files = [*sorted((pkg / "server").glob("*.py")), pkg / "cli.py", pkg / "__main__.py"]
+    for f in files:
+        ast.parse(f.read_text(encoding="utf-8"), filename=str(f), feature_version=(3, 11))
+    assert len(files) >= 6
