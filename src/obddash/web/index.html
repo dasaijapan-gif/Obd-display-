@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>OBD Schematic Dash</title>
+<link rel="stylesheet" href="css/schematic.css">
+</head>
+<body class="kiosk">
+<div id="stage">
+  <canvas id="main"></canvas>
+  <div class="banner nolink" id="nolink" hidden>No link — waiting for telemetry on <span id="wsurl"></span><button class="btn" id="btnDemo" type="button">Demo</button></div>
+  <div class="banner alert" id="alertStrip" hidden></div>
+  <div class="pagebtns" id="dynoButtons" hidden><button class="btn primary" id="btnArm" type="button">Arm</button><button class="btn" id="btnClear" type="button">Clear</button></div>
+  <div class="pagebtns" id="systemButtons" hidden><button class="btn" id="btnToggleDemo" type="button">Demo</button><button class="btn" id="btnResetSession" type="button">Reset session</button><button class="btn" id="btnReload" type="button">Reload</button></div>
+  <div class="shiftOverlay" id="shiftOverlay" hidden><span class="grade">A</span><span class="score">86</span><span class="what">4→3 · heel-toe</span></div>
+  <div class="dots" id="dots"></div>
+  <div class="hint">← → or tap edges · keys 1-6</div>
+  <div class="titleblock">
+    <div><b>OBD display</b>schematic telemetry</div>
+    <div class="sheet"><b id="tbSheet">SHT 1/6</b><span id="tbPage">DRIVE</span></div>
+    <div><b id="tbSrc">NO LINK</b><span id="tbClock">00:00</span></div>
+  </div>
+</div>
+<script src="js/util.js"></script>
+<script src="js/draw.js"></script>
+<script src="js/ws.js"></script>
+<script src="js/demo.js"></script>
+<script src="js/pages/drive.js"></script>
+<script src="js/pages/shift.js"></script>
+<script src="js/pages/dyno.js"></script>
+<script src="js/pages/brake.js"></script>
+<script src="js/pages/handling.js"></script>
+<script src="js/pages/system.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

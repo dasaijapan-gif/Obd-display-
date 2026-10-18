@@ -1,0 +1,96 @@
+/* obddash schematic UI — engineering-drawing look, single deliberate dark theme (in-car at night).
+   Layout concept: one full-bleed canvas per page; DOM only for the title block, page dots, banners, buttons. */
+:root {
+  --bg: #0a0e13;          /* drawing surface */
+  --bg-2: #0e141b;        /* raised panels (title block) */
+  --grid: #111922;        /* minor grid */
+  --grid-major: #16222e;  /* major grid */
+  --ink: #5fd4ff;         /* primary drawing ink: lines, ticks, data series 1 */
+  --ink-2: #c7a9ff;       /* data series 2 (ECU torque, reference) */
+  --ink-dim: #2b6a86;     /* ink at low emphasis */
+  --steel: #3f5a6e;       /* secondary lines, brackets */
+  --steel-dim: #243442;   /* recessive lines */
+  --text: #dbe7ee;        /* primary text */
+  --muted: #86a0b0;       /* secondary text */
+  --faint: #4e6372;       /* tertiary text */
+  --amber: #ffb547;       /* warning, shift light, estimated values */
+  --red: #ff4d5e;         /* alerts, redline */
+  --green: #3ddc97;       /* ok / good */
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace;
+  color-scheme: dark;
+}
+[hidden] { display: none !important; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+body.kiosk { overflow: hidden; -webkit-user-select: none; user-select: none; touch-action: none; }
+#stage { position: absolute; inset: 0; overflow: hidden; }
+#main { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+/* ---- title block (engineering drawing corner) ---- */
+.titleblock {
+  position: absolute; right: 0; bottom: 0;
+  display: grid; grid-template-columns: auto auto auto;
+  border-top: 1px solid var(--steel); border-left: 1px solid var(--steel);
+  background: var(--bg-2);
+  font-size: 10px; line-height: 1.2; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--muted);
+}
+.titleblock > div { padding: 4px 10px; border-left: 1px solid var(--steel-dim); }
+.titleblock > div:first-child { border-left: 0; }
+.titleblock b { display: block; color: var(--text); font-weight: 600; font-size: 11px; }
+.titleblock .sheet b { color: var(--ink); }
+
+/* ---- page dots ---- */
+.dots { position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); display: flex; gap: 10px; }
+.dots span { width: 18px; height: 3px; background: var(--steel-dim); display: block; }
+.dots span.on { background: var(--ink); }
+
+/* ---- banners ---- */
+.banner {
+  position: absolute; left: 0; right: 0; top: 0; z-index: 5;
+  display: flex; align-items: center; justify-content: center; gap: 16px;
+  padding: 6px 12px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
+}
+.banner.nolink { background: rgba(255, 181, 71, .12); color: var(--amber); border-bottom: 1px solid var(--amber); }
+.banner.alert { background: rgba(255, 77, 94, .14); color: var(--red); border-bottom: 1px solid var(--red); top: auto; bottom: 0; }
+.banner .btn { font-size: 11px; }
+
+/* ---- buttons ---- */
+.btn {
+  font: inherit; font-size: 12px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--ink); background: transparent; border: 1px solid var(--ink-dim);
+  padding: 8px 14px; cursor: pointer; min-width: 72px;
+}
+.btn:hover, .btn:focus-visible { border-color: var(--ink); outline: none; background: rgba(95, 212, 255, .08); }
+.btn:active { background: rgba(95, 212, 255, .18); }
+.btn.primary { border-color: var(--ink); }
+.btn.danger { color: var(--red); border-color: rgba(255, 77, 94, .5); }
+.pagebtns { position: absolute; display: flex; gap: 8px; z-index: 4; }
+.pagebtns[hidden] { display: none; }
+#dynoButtons { right: 12px; top: 10px; }
+#systemButtons { right: 12px; top: 12px; }
+#systemButtons .btn { padding: 6px 12px; font-size: 11px; }
+
+/* ---- shift score overlay ---- */
+.shiftOverlay {
+  position: absolute; left: 50%; top: 46%; transform: translate(-50%, -50%);
+  display: flex; align-items: baseline; gap: 18px; padding: 10px 26px;
+  background: rgba(10, 14, 19, .92); border: 1px solid var(--ink);
+  box-shadow: 0 0 0 4px rgba(95, 212, 255, .12);
+  pointer-events: none; z-index: 6;
+  animation: pop .25s ease-out;
+}
+.shiftOverlay[hidden] { display: none; }
+.shiftOverlay .grade { font-size: 72px; font-weight: 700; color: var(--text); line-height: 1; }
+.shiftOverlay .score { font-size: 40px; color: var(--text); line-height: 1; }
+.shiftOverlay .what { font-size: 13px; color: var(--muted); letter-spacing: .1em; text-transform: uppercase; }
+.shiftOverlay.good { border-color: var(--green); box-shadow: 0 0 0 4px rgba(61, 220, 151, .15); }
+.shiftOverlay.bad { border-color: var(--amber); box-shadow: 0 0 0 4px rgba(255, 181, 71, .15); }
+@keyframes pop { from { transform: translate(-50%, -50%) scale(.9); opacity: 0; } to { transform: translate(-50%, -50%) scale(1); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .shiftOverlay { animation: none; } }
+
+.hint { position: absolute; left: 12px; bottom: 10px; font-size: 10px; color: var(--faint); letter-spacing: .08em; text-transform: uppercase; }
